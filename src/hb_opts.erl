@@ -301,6 +301,9 @@ default_message() ->
                     <<"name">> => <<"cache-mainnet">>
                 },
                 #{
+                    <<"store-module">> => hb_store_s3
+                },
+                #{
                     <<"store-module">> => hb_store_gateway,
                     <<"subindex">> => [
                         #{

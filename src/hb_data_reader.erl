@@ -14,6 +14,32 @@ chunk_size(Opts) ->
 
 %% @doc Retrieve dataset metadata via HEAD and fall back to Range probing.
 metadata(ID, Opts) when is_binary(ID), is_map(Opts) ->
+    % Check S3 first if enabled
+    case hb_opts:get(s3_enabled, true, Opts) of
+        true ->
+            io:format("DEBUG: Checking S3 for metadata ID=~p~n", [ID]),
+            try
+                case hb_gateway_s3:get_stream_info(ID, Opts) of
+                    {ok, #{content_type := CType, total_size := Total}} ->
+                        io:format("DEBUG: Found in S3! Size=~p, Type=~p~n", [Total, CType]),
+                        {ok, #{size => Total, content_type => CType}};
+                    S3Result ->
+                        io:format("DEBUG: S3 metadata failed: ~p, falling back to HTTP~n", [S3Result]),
+                        % Fall back to HTTP if S3 fails
+                        http_metadata(ID, Opts)
+                end
+            catch
+                Error:Reason:Stack ->
+                    io:format("DEBUG: S3 metadata exception ~p:~p, falling back to HTTP~n", [Error, Reason]),
+                    io:format("DEBUG: Stack trace: ~p~n", [Stack]),
+                    http_metadata(ID, Opts)
+            end;
+        false ->
+            io:format("DEBUG: S3 disabled, using HTTP~n"),
+            http_metadata(ID, Opts)
+    end.
+
+http_metadata(ID, Opts) ->
     case head_request(ID, Opts) of
         {ok, Meta} -> {ok, Meta};
         {error, _} -> range_metadata(ID, Opts)
@@ -99,6 +125,21 @@ range_metadata(ID, Opts) ->
     end.
 
 full_get(ID, Meta, Opts) ->
+    % Check S3 first if enabled
+    case hb_opts:get(s3_enabled, true, Opts) of
+        true ->
+            case hb_gateway_s3:data(ID, Opts) of
+                {ok, Data} ->
+                    {ok, #{ data => Data, content_type => maps:get(content_type, Meta) }};
+                _ ->
+                    % Fall back to HTTP if S3 fails
+                    http_full_get(ID, Meta, Opts)
+            end;
+        false ->
+            http_full_get(ID, Meta, Opts)
+    end.
+
+http_full_get(ID, Meta, Opts) ->
     Req = base_request(ID, <<"GET">>),
     case hb_http:request(Req, Opts) of
         {ok, Msg} ->
@@ -124,6 +165,37 @@ stream_loop(ID, Meta = #{size := Total}, Offset, ChunkSize, ChunkFun, Opts) ->
     end.
 
 range_request(ID, Start, End, Meta, Opts) when Start =< End ->
+    % Check S3 first if enabled
+    case hb_opts:get(s3_enabled, true, Opts) of
+        true ->
+            try
+                RangeValue = range_header(Start, End),
+                case hb_gateway_s3:data_with_range(ID, RangeValue, Opts) of
+                    {ok, #{<<"body">> := Body, <<"start">> := S3Start, <<"end">> := S3End, <<"total">> := S3Total}} ->
+                        CType = maps:get(content_type, Meta, <<"application/octet-stream">>),
+                        {ok, #{
+                            body => Body,
+                            start => S3Start,
+                            range_end => S3End,
+                            total => S3Total,
+                            content_type => CType,
+                            final => final_flag(S3End, S3Total)
+                        }};
+                    _ ->
+                        % Fall back to HTTP if S3 fails
+                        http_range_request(ID, Start, End, Meta, Opts)
+                end
+            catch
+                Error:Reason:_Stack ->
+                    io:format("DEBUG: S3 range request exception ~p:~p, falling back to HTTP~n", [Error, Reason]),
+                    http_range_request(ID, Start, End, Meta, Opts)
+            end;
+        false ->
+            http_range_request(ID, Start, End, Meta, Opts)
+    end;
+range_request(_, _, _, _, _) -> {error, invalid_range_request}.
+
+http_range_request(ID, Start, End, Meta, Opts) ->
     RangeValue = range_header(Start, End),
     BaseReq = base_request(ID, <<"GET">>),
     Req = BaseReq#{ <<"range">> => RangeValue },
@@ -138,8 +210,7 @@ range_request(ID, Start, End, Meta, Opts) when Start =< End ->
                     {error, {range_not_satisfiable, Total}};
                 _ -> {error, {http_error, Status}}
             end
-    end;
-range_request(_, _, _, _, _) -> {error, invalid_range_request}.
+    end.
 
 handle_range_response(Msg, Start, End, Meta, Opts) ->
     Status = hb_ao:get(<<"status">>, Msg, 200, Opts),

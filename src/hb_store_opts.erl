@@ -37,6 +37,8 @@ apply_defaults_by_module_type(StoreOpt, Defaults) ->
             apply_type_defaults(StoreOpt, <<"rocksdb">>, Defaults);
         hb_store_gateway ->
             apply_type_defaults(StoreOpt, <<"gateway">>, Defaults);
+        hb_store_s3 ->
+            apply_type_defaults(StoreOpt, <<"s3">>, Defaults);
         _ ->
             StoreOpt
     end.
