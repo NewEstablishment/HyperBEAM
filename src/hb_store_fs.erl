@@ -21,6 +21,7 @@
 -export([start/1, stop/1, reset/1, scope/0, scope/1]).
 -export([type/2, read/2, write/3, list/2]).
 -export([make_group/2, make_link/3, resolve/2]).
+-export([supports_range/1, read_range/4, get_size/2]).
 -include_lib("kernel/include/file.hrl").
 -include("include/hb.hrl").
 
@@ -61,6 +62,68 @@ read(Path) ->
 					not_found
 			end
 	end.
+
+%% @doc Check if this store supports range reads.
+supports_range(_Opts) -> true.
+
+%% @doc Get the size of data at a path.
+get_size(Opts, Key) ->
+    Path = add_prefix(Opts, resolve(Opts, Key)),
+    case file:read_file_info(Path) of
+        {ok, #file_info{type = regular, size = Size}} ->
+            {ok, Size};
+        {ok, #file_info{type = symlink}} ->
+            case file:read_link(Path) of
+                {ok, Link} ->
+                    get_size(Opts, Link);
+                _ -> not_found
+            end;
+        _ -> not_found
+    end.
+
+%% @doc Read a range of bytes from a file.
+read_range(Opts, Key, Start, End) when Start =< End, Start >= 0 ->
+    Path = add_prefix(Opts, resolve(Opts, Key)),
+    read_range_from_path(Path, Start, End);
+read_range(_Opts, _Key, _Start, _End) ->
+    {error, invalid_range}.
+
+%% @doc Read a range from a specific file path, following symlinks.
+read_range_from_path(Path, Start, End) ->
+    ?event({read_range, Path, Start, End}),
+    case file:read_file_info(Path) of
+        {ok, #file_info{type = regular, size = Size}} ->
+            case Start >= Size of
+                true -> {error, range_not_satisfiable};
+                false ->
+                    ActualEnd = min(End, Size - 1),
+                    Length = ActualEnd - Start + 1,
+                    case file:open(Path, [read, binary, raw]) of
+                        {ok, File} ->
+                            try
+                                case file:position(File, Start) of
+                                    {ok, Start} ->
+                                        case file:read(File, Length) of
+                                            {ok, Data} -> {ok, Data};
+                                            Error -> Error
+                                        end;
+                                    Error -> Error
+                                end
+                            after
+                                file:close(File)
+                            end;
+                        Error -> Error
+                    end
+            end;
+        {ok, #file_info{type = symlink}} ->
+            case file:read_link(Path) of
+                {ok, Link} ->
+                    ?event({range_link_found, Path, Link}),
+                    read_range_from_path(Link, Start, End);
+                _ -> not_found
+            end;
+        _ -> not_found
+    end.
 
 %% @doc Write a value to the specified path in the store.
 write(Opts, PathComponents, Value) ->

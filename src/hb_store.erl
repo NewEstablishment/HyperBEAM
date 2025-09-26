@@ -47,6 +47,7 @@
 -export([start/1, stop/1, reset/1]).
 -export([filter/2, scope/2, sort/2]).
 -export([type/2, read/2, write/3, list/2, match/2]).
+-export([supports_range/1, read_range/4, get_size/2]).
 -export([path/1, path/2, add_path/2, add_path/3, join/1]).
 -export([make_group/2, make_link/3, resolve/2]).
 -export([find/1]).
@@ -68,7 +69,11 @@ behavior_info(callbacks) ->
     [
         {start, 1}, {stop, 1}, {reset, 1}, {make_group, 2}, {make_link, 3},
         {type, 2}, {read, 2}, {write, 3},
-        {list, 2}, {match, 2}, {path, 2}, {add_path, 3}
+        {list, 2}, {match, 2}, {path, 2}, {add_path, 3},
+        % Range read support
+        {supports_range, 1},      % Returns true/false for range capability
+        {read_range, 4},          % read_range(Store, Path, Start, End)
+        {get_size, 2}             % get_size(Store, Path) for metadata
     ].
 
 -define(DEFAULT_SCOPE, local).
@@ -76,7 +81,7 @@ behavior_info(callbacks) ->
 
 %% @doc Store access policies to function names.
 -define(STORE_ACCESS_POLICIES, #{
-    <<"read">> => [read, resolve, list, type, path, add_path, join],
+    <<"read">> => [read, resolve, list, type, path, add_path, join, supports_range, read_range, get_size],
     <<"write">> => [write, make_link, make_group, reset, path, add_path, join],
     <<"admin">> => [start, stop, reset]
 }).
@@ -299,11 +304,22 @@ resolve(Modules, Path) -> call_function(Modules, resolve, [Path]).
 %% structures, so this is likely to be very slow for most stores.
 list(Modules, Path) -> call_function(Modules, list, [Path]).
 
-%% @doc Match a series of keys and values against the store. Returns 
+%% @doc Match a series of keys and values against the store. Returns
 %% `{ok, Matches}' if the match is successful, or `not_found' if there are no
 %% messages in the store that feature all of the given key-value pairs. `Matches'
 %% is given as a list of IDs.
 match(Modules, Match) -> call_function(Modules, match, [Match]).
+
+%% @doc Check if any store in the hierarchy supports range reads.
+supports_range(Modules) -> call_function(Modules, supports_range, []).
+
+%% @doc Read a range of bytes from a path in any store that supports it.
+%% Returns `{ok, Data}' if successful, or `not_found' if no store can fulfill the request.
+read_range(Modules, Path, Start, End) -> call_function(Modules, read_range, [Path, Start, End]).
+
+%% @doc Get the size of data at a path from any store.
+%% Returns `{ok, Size}' if successful, or `not_found' if the path doesn't exist.
+get_size(Modules, Path) -> call_function(Modules, get_size, [Path]).
 
 %% @doc Call a function on the first store module that succeeds. Returns its
 %% result, or `not_found` if none of the stores succeed. If `TIME_CALLS` is set,

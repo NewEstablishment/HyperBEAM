@@ -2,6 +2,7 @@
 %%% GraphQL routes, additionally including additional store-specific routes.
 -module(hb_store_gateway).
 -export([scope/1, type/2, read/2, resolve/2, list/2]).
+-export([supports_range/1, read_range/4, get_size/2]).
 -include("include/hb.hrl").
 -include_lib("eunit/include/eunit.hrl").
 
@@ -117,6 +118,81 @@ opts(Opts) ->
                     }
             end
     end.
+
+%% @doc Check if this store supports range reads.
+%% Gateway stores support range reads via HTTP Range headers.
+supports_range(_StoreOpts) -> true.
+
+%% @doc Get the size of data at a path using HEAD request.
+get_size(BaseStoreOpts, Key) ->
+    StoreOpts = opts(BaseStoreOpts),
+    case hb_path:term_to_path_parts(Key, StoreOpts) of
+        [ID|_Rest] when ?IS_ID(ID) ->
+            ?event({gateway_get_size, {id, ID}, {subpath, _Rest}}),
+            % Use HEAD request to get content length
+            case hb_http:request(#{
+                <<"method">> => <<"HEAD">>,
+                <<"path">> => <<"/raw/", ID/binary>>,
+                <<"multirequest-responses">> => 1
+            }, StoreOpts) of
+                {ok, Response} ->
+                    case hb_ao:get(<<"content-length">>, Response, undefined, StoreOpts) of
+                        undefined -> not_found;
+                        SizeBin ->
+                            try
+                                Size = binary_to_integer(SizeBin),
+                                {ok, Size}
+                            catch _:_ -> not_found
+                            end
+                    end;
+                {error, _} -> not_found
+            end;
+        _ ->
+            ?event({ignoring_non_id_for_size, Key}),
+            not_found
+    end.
+
+%% @doc Read a range of bytes from gateway using HTTP Range header.
+read_range(BaseStoreOpts, Key, Start, End) when Start =< End, Start >= 0 ->
+    StoreOpts = opts(BaseStoreOpts),
+    case hb_path:term_to_path_parts(Key, StoreOpts) of
+        [ID|_Rest] when ?IS_ID(ID) ->
+            ?event({gateway_read_range, {id, ID}, {start, Start}, {'end', End}}),
+            RangeHeader = iolist_to_binary([
+                <<"bytes=">>,
+                integer_to_binary(Start),
+                <<"-">>,
+                integer_to_binary(End)
+            ]),
+            case hb_http:request(#{
+                <<"method">> => <<"GET">>,
+                <<"path">> => <<"/raw/", ID/binary>>,
+                <<"range">> => RangeHeader,
+                <<"multirequest-responses">> => 1
+            }, StoreOpts) of
+                {ok, Response} ->
+                    Status = hb_ao:get(<<"status">>, Response, 200, StoreOpts),
+                    case Status of
+                        206 ->
+                            % Partial content - success
+                            Body = hb_ao:get(<<"body">>, Response, <<>>, StoreOpts),
+                            try hb_store_remote_node:maybe_cache(StoreOpts, Response)
+                            catch _:_ -> ignored end,
+                            {ok, Body};
+                        416 ->
+                            % Range not satisfiable
+                            {error, range_not_satisfiable};
+                        _ ->
+                            {error, {http_error, Status}}
+                    end;
+                {error, _} -> not_found
+            end;
+        _ ->
+            ?event({ignoring_non_id_for_range, Key}),
+            not_found
+    end;
+read_range(_StoreOpts, _Key, _Start, _End) ->
+    {error, invalid_range}.
 
 %%% Tests
 

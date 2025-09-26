@@ -5,6 +5,7 @@
 %%% to upload it to an Arweave bundler to ensure persistence, too.
 -module(hb_store_remote_node).
 -export([scope/1, type/2, read/2, write/3, make_link/3, resolve/2]).
+-export([supports_range/1, read_range/4, get_size/2]).
 %%% Public utilities.
 -export([maybe_cache/2, maybe_cache/3]).
 -include("include/hb.hrl").
@@ -71,6 +72,75 @@ read(Opts = #{ <<"node">> := Node }, Key) ->
             ?event(store_remote_node, {read_not_found, {key, Key}}),
             not_found
     end.
+
+%% @doc Check if this store supports range reads.
+%% Remote nodes support range reads via HTTP Range headers.
+supports_range(_StoreOpts) -> true.
+
+%% @doc Get the size of data at a path using HEAD request to remote node.
+get_size(Opts = #{ <<"node">> := Node }, Key) ->
+    ?event(store_remote_node, {executing_get_size, {node, Node}, {key, Key}}),
+    HTTPRes =
+        hb_http:request(#{
+            <<"method">> => <<"HEAD">>,
+            <<"path">> => <<"/~cache@1.0/read">>,
+            <<"target">> => Key
+        }, Opts),
+    case HTTPRes of
+        {ok, Res} ->
+            case hb_ao:get(<<"content-length">>, Res, undefined, Opts) of
+                undefined -> not_found;
+                SizeBin ->
+                    try
+                        Size = binary_to_integer(SizeBin),
+                        {ok, Size}
+                    catch _:_ -> not_found
+                    end
+            end;
+        {error, _Err} ->
+            ?event(store_remote_node, {get_size_not_found, {key, Key}}),
+            not_found
+    end.
+
+%% @doc Read a range of bytes from a remote node.
+read_range(Opts = #{ <<"node">> := Node }, Key, Start, End) when Start =< End, Start >= 0 ->
+    ?event(store_remote_node, {executing_read_range, {node, Node}, {key, Key}, {start, Start}, {'end', End}}),
+    RangeHeader = iolist_to_binary([
+        <<"bytes=">>,
+        integer_to_binary(Start),
+        <<"-">>,
+        integer_to_binary(End)
+    ]),
+    HTTPRes =
+        hb_http:request(#{
+            <<"method">> => <<"GET">>,
+            <<"path">> => <<"/~cache@1.0/read">>,
+            <<"target">> => Key,
+            <<"range">> => RangeHeader
+        }, Opts),
+    case HTTPRes of
+        {ok, Res} ->
+            Status = hb_ao:get(<<"status">>, Res, 200, Opts),
+            case Status of
+                206 ->
+                    % Partial content success
+                    {ok, Msg} = hb_message:with_only_committed(Res, Opts),
+                    Body = hb_ao:get(<<"body">>, Msg, <<>>, Opts),
+                    ?event(store_remote_node, {read_range_found, {result, Body}}),
+                    maybe_cache(Opts, Msg, [Key]),
+                    {ok, Body};
+                416 ->
+                    % Range not satisfiable
+                    {error, range_not_satisfiable};
+                _ ->
+                    {error, {http_error, Status}}
+            end;
+        {error, _Err} ->
+            ?event(store_remote_node, {read_range_not_found, {key, Key}}),
+            not_found
+    end;
+read_range(_Opts, _Key, _Start, _End) ->
+    {error, invalid_range}.
 
 %% @doc Cache the data if the cache is enabled. The `local-store' option may
 %% either be `false' or a store definition to use as the local cache. Additional
