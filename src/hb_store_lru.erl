@@ -18,7 +18,7 @@
 -module(hb_store_lru).
 -export([start/1, stop/1, reset/1, scope/1]).
 -export([write/3, read/2, list/2, type/2, make_link/3, make_group/2, resolve/2]).
--export([supports_range/1, read_range/4, get_size/2]).
+-export([supports_range/1, get_size/2]).
 -include_lib("eunit/include/eunit.hrl").
 -include("include/hb.hrl").
 
@@ -202,31 +202,6 @@ get_size(Opts, Key) ->
         not_found -> not_found
     end.
 
-%% @doc Read a range of bytes from a value stored in LRU cache.
-%% Since LRU doesn't support partial reads natively, we read the full value
-%% and slice it in memory. This is a fallback implementation.
-read_range(Opts, Key, Start, End) when Start =< End, Start >= 0 ->
-    case read(Opts, Key) of
-        {ok, Value} ->
-            Size = byte_size(Value),
-            case Start >= Size of
-                true -> {error, range_not_satisfiable};
-                false ->
-                    ActualEnd = min(End, Size - 1),
-                    Length = ActualEnd - Start + 1,
-                    case Start + Length =< Size of
-                        true ->
-                            {ok, binary:part(Value, Start, Length)};
-                        false ->
-                            % Handle case where range extends beyond data
-                            AvailableLength = Size - Start,
-                            {ok, binary:part(Value, Start, AvailableLength)}
-                    end
-            end;
-        not_found -> not_found
-    end;
-read_range(_Opts, _Key, _Start, _End) ->
-    {error, invalid_range}.
 
 resolve(Opts, Key) ->
     Res = resolve(Opts, "", hb_path:term_to_path_parts(hb_store:join(Key), Opts)),

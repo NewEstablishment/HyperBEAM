@@ -12,7 +12,7 @@
 -export([enabled/0, start/1, start_link/1, stop/1, scope/1]).
 -export([read/2, write/3, list/2, reset/1, list/0]).
 -export([make_link/3, make_group/2, type/2, add_path/3, path/2, resolve/2]).
--export([supports_range/1, read_range/4, get_size/2]).
+-export([supports_range/1, get_size/2]).
 -export([init/1, terminate/2, handle_cast/2, handle_info/2, handle_call/3]).
 -export([code_change/3]).
 -include("include/hb.hrl").
@@ -113,32 +113,6 @@ get_size(Opts, Key) ->
         {error, _} = Err -> Err
     end.
 
-%% @doc Read a range of bytes from a value stored in RocksDB.
-%% Since RocksDB doesn't support partial reads natively, we read the full value
-%% and slice it in memory. This is a fallback implementation.
-read_range(Opts, Key, Start, End) when Start =< End, Start >= 0 ->
-    case read(Opts, Key) of
-        {ok, Value} ->
-            Size = byte_size(Value),
-            case Start >= Size of
-                true -> {error, range_not_satisfiable};
-                false ->
-                    ActualEnd = min(End, Size - 1),
-                    Length = ActualEnd - Start + 1,
-                    case Start + Length =< Size of
-                        true ->
-                            {ok, binary:part(Value, Start, Length)};
-                        false ->
-                            % Handle case where range extends beyond data
-                            AvailableLength = Size - Start,
-                            {ok, binary:part(Value, Start, AvailableLength)}
-                    end
-            end;
-        not_found -> not_found;
-        {error, _} = Err -> Err
-    end;
-read_range(_Opts, _Key, _Start, _End) ->
-    {error, invalid_range}.
 
 %% @doc Write given Key and Value to the database
 -spec write(Opts, Key, Value) -> Result when

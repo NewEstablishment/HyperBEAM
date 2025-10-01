@@ -445,7 +445,7 @@ maybe_handle_data_request(Method, Path, RawReq, NodeMsg) ->
     end.
 
 handle_data_request(DataID, RangeHeader, RawReq, Path, NodeMsg) ->
-    case hb_data_reader_storage:metadata(DataID, NodeMsg) of
+    case hb_data_reader:metadata(DataID, NodeMsg) of
         {ok, Meta} when is_binary(RangeHeader) ->
             handle_range_request(DataID, RangeHeader, Meta, RawReq, NodeMsg);
         {ok, Meta} ->
@@ -468,7 +468,7 @@ handle_range_request(DataID, RangeBin, Meta, RawReq, NodeMsg) ->
                 true ->
                     stream_range_request(DataID, Meta, CType, Start, End, RawReq, NodeMsg);
                 false ->
-                    case hb_data_reader_storage:read_range(DataID, RangeBin, Meta, NodeMsg) of
+                    case hb_data_reader:read_range(DataID, RangeBin, Meta, NodeMsg) of
                         {ok, #{body := Partial, start := RespStart, range_end := RespEnd, total := RespTotal} = RangeInfo} ->
                             RespContentType = maps:get(content_type, RangeInfo, CType),
                             ContentRange = hb_http_range:build_content_range(RespStart, RespEnd, RespTotal),
@@ -514,7 +514,7 @@ stream_range_request(DataID, Meta, CType, Start, End, RawReq, NodeMsg) ->
         <<"content-type">> => CType,
         <<"content-range">> => ContentRange
     },
-    ChunkSize0 = hb_data_reader_storage:chunk_size(NodeMsg),
+    ChunkSize0 = hb_data_reader:chunk_size(NodeMsg),
     StreamFun = fun(StreamReq) ->
         stream_range_loop(StreamReq, DataID, Meta, Start, End, ChunkSize0, NodeMsg)
     end,
@@ -523,7 +523,7 @@ stream_range_request(DataID, Meta, CType, Start, End, RawReq, NodeMsg) ->
 stream_range_loop(StreamReq, DataID, Meta, Offset, End, ChunkSize, NodeMsg) when Offset =< End ->
     MaxSize = End - Offset + 1,
     ThisSize = case ChunkSize =< MaxSize of true -> ChunkSize; false -> MaxSize end,
-    case hb_data_reader_storage:next_chunk(DataID, Meta, Offset, ThisSize, NodeMsg) of
+    case hb_data_reader:next_chunk(DataID, Meta, Offset, ThisSize, NodeMsg) of
         {ok, #{ body := Body, range_end := RangeEnd }} ->
             IsFinal = RangeEnd >= End,
             hb_http:send_streamed_response(StreamReq, Body, IsFinal, NodeMsg),
@@ -544,7 +544,7 @@ handle_full_request(DataID, Meta = #{size := Total}, RawReq, Path, NodeMsg) ->
         true ->
             stream_large_data(DataID, Meta, CType, RawReq, Path, NodeMsg);
         false ->
-            case hb_data_reader_storage:fetch_full(DataID, Meta, NodeMsg) of
+            case hb_data_reader:fetch_full(DataID, Meta, NodeMsg) of
                 {ok, #{data := Data}} ->
                     Msg = #{
                         <<"status">> => 200,
@@ -564,8 +564,8 @@ handle_full_request(DataID, Meta = #{size := Total}, RawReq, Path, NodeMsg) ->
     end.
 
 stream_large_data(DataID, Meta, CType, RawReq, Path, NodeMsg) ->
-    ChunkSize = hb_data_reader_storage:chunk_size(NodeMsg),
-    case hb_data_reader_storage:next_chunk(DataID, Meta, 0, ChunkSize, NodeMsg) of
+    ChunkSize = hb_data_reader:chunk_size(NodeMsg),
+    case hb_data_reader:next_chunk(DataID, Meta, 0, ChunkSize, NodeMsg) of
         {ok, FirstChunk} ->
             % Sign only header fields (no content-digest). Always use header mode for streaming.
             ExtraHeaders = #{
@@ -590,7 +590,7 @@ stream_large_data(DataID, Meta, CType, RawReq, Path, NodeMsg) ->
                     true -> ok;
                     false ->
                         NextOffset = maps:get(range_end, FirstChunk) + 1,
-                        case hb_data_reader_storage:stream_from(
+                        case hb_data_reader:stream_from(
                             DataID,
                             Meta,
                             NextOffset,
@@ -790,6 +790,7 @@ start_node(Opts) ->
     ServerOpts = set_default_opts(Opts),
     {ok, _Listener, Port} = new_server(ServerOpts),
     <<"http://localhost:", (integer_to_binary(Port))/binary, "/">>.
+
 
 %%% Tests
 %%% The following only covering the HTTP server initialization process. For tests

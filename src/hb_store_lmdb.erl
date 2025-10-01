@@ -23,7 +23,7 @@
 -export([start/1, stop/1, scope/0, scope/1, reset/1]).
 -export([read/2, write/3, list/2, match/2]).
 -export([make_group/2, make_link/3, type/2]).
--export([supports_range/1, read_range/4, get_size/2]).
+-export([supports_range/1, get_size/2]).
 -export([path/2, add_path/3, resolve/2]).
 
 %% Test framework and project includes
@@ -227,31 +227,6 @@ get_size(Opts, Key) ->
         not_found -> not_found
     end.
 
-%% @doc Read a range of bytes from a value stored in LMDB.
-%% Since LMDB doesn't support partial reads natively, we read the full value
-%% and slice it in memory. This is a fallback implementation.
-read_range(Opts, Key, Start, End) when Start =< End, Start >= 0 ->
-    case read(Opts, Key) of
-        {ok, Value} ->
-            Size = byte_size(Value),
-            case Start >= Size of
-                true -> {error, range_not_satisfiable};
-                false ->
-                    ActualEnd = min(End, Size - 1),
-                    Length = ActualEnd - Start + 1,
-                    case Start + Length =< Size of
-                        true ->
-                            {ok, binary:part(Value, Start, Length)};
-                        false ->
-                            % Handle case where range extends beyond data
-                            AvailableLength = Size - Start,
-                            {ok, binary:part(Value, Start, AvailableLength)}
-                    end
-            end;
-        not_found -> not_found
-    end;
-read_range(_Opts, _Key, _Start, _End) ->
-    {error, invalid_range}.
 
 %% @doc Helper function to convert to a path
 to_path(PathParts) ->

@@ -123,14 +123,7 @@ default_message() ->
         range_requests_enabled => true,
         %% Storage-aware range request options
         use_storage_for_range => true,              % Enable storage-based range reads
-        use_intelligent_storage => true,            % Enable intelligent storage decision making
         storage_range_fallback => http,             % Fallback strategy: http | error
-        range_cache_enabled => true,                % Cache range results
-        range_prefetch_enabled => false,            % Predictive prefetching
-        storage_max_fallback_size => 52428800,      % 50MB - max size for fallback reads
-        storage_max_full_size => 104857600,         % 100MB - max size for full storage reads
-        storage_max_stream_size => 209715200,       % 200MB - max size for storage streaming
-        storage_try_large_files => false,           % Try storage for large files
         %% Choice of remote nodes for tasks that are not local to hyperbeam.
         gateway => <<"https://arweave.net">>,
         bundler_ans104 => <<"https://up.arweave.net:443">>,

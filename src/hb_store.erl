@@ -313,9 +313,59 @@ match(Modules, Match) -> call_function(Modules, match, [Match]).
 %% @doc Check if any store in the hierarchy supports range reads.
 supports_range(Modules) -> call_function(Modules, supports_range, []).
 
-%% @doc Read a range of bytes from a path in any store that supports it.
-%% Returns `{ok, Data}' if successful, or `not_found' if no store can fulfill the request.
-read_range(Modules, Path, Start, End) -> call_function(Modules, read_range, [Path, Start, End]).
+%% @doc Read a range of bytes from a path with centralized fallback.
+%% First tries stores with native range support, then falls back to full read + slice.
+read_range(Modules, Path, Start, End) ->
+    case call_function(Modules, supports_range, []) of
+        true ->
+            % Try native range support first
+            call_function(Modules, read_range, [Path, Start, End]);
+        false ->
+            % Fallback: read full data and slice
+            case read(Modules, Path) of
+                {ok, Data} -> slice_data(Data, Start, End);
+                Error -> Error
+            end;
+        not_found ->
+            % Mixed capabilities, try each store individually
+            read_range_mixed(Modules, Path, Start, End)
+    end.
+
+%% @doc Handle stores with mixed range capabilities.
+read_range_mixed([], _Path, _Start, _End) -> not_found;
+read_range_mixed([Store | Rest], Path, Start, End) ->
+    case call_function([Store], supports_range, []) of
+        true ->
+            case call_function([Store], read_range, [Path, Start, End]) of
+                {ok, Data} -> {ok, Data};
+                _ -> read_range_mixed(Rest, Path, Start, End)
+            end;
+        false ->
+            case read([Store], Path) of
+                {ok, Data} -> slice_data(Data, Start, End);
+                _ -> read_range_mixed(Rest, Path, Start, End)
+            end;
+        not_found ->
+            read_range_mixed(Rest, Path, Start, End)
+    end.
+
+%% @doc Slice data from Start to End bytes.
+slice_data(Data, Start, End) ->
+    Size = byte_size(Data),
+    ActualEnd = min(End, Size - 1),
+    case Start =< ActualEnd andalso Start >= 0 of
+        true ->
+            Length = ActualEnd - Start + 1,
+            case Start + Length =< Size of
+                true ->
+                    RangeData = binary:part(Data, Start, Length),
+                    {ok, RangeData};
+                false ->
+                    {error, range_not_satisfiable}
+            end;
+        false ->
+            {error, range_not_satisfiable}
+    end.
 
 %% @doc Get the size of data at a path from any store.
 %% Returns `{ok, Size}' if successful, or `not_found' if the path doesn't exist.

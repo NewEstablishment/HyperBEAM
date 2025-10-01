@@ -4,6 +4,14 @@
 -export([compute_next_range/3]).
 -endif.
 
+-ifdef(STORE_EVENTS).
+-include("hb_logger.hrl").
+-else.
+-define(event(X), ok).
+-define(event(X, Y), ok).
+-define(event(X, Y, Z), ok).
+-endif.
+
 -define(DEFAULT_CHUNK_SIZE, 1024 * 1024).
 
 chunk_size(Opts) ->
@@ -12,15 +20,50 @@ chunk_size(Opts) ->
         _ -> ?DEFAULT_CHUNK_SIZE
     end.
 
-%% @doc Retrieve dataset metadata via HEAD and fall back to Range probing.
+%% @doc Retrieve dataset metadata, trying storage first then HTTP.
 metadata(ID, Opts) when is_binary(ID), is_map(Opts) ->
+    case should_use_storage(ID, Opts) of
+        true ->
+            ?event({trying_storage_metadata, {id, ID}}),
+            case storage_metadata(ID, Opts) of
+                {ok, Meta} ->
+                    ?event({storage_metadata_success, {id, ID}}),
+                    {ok, Meta};
+                Error ->
+                    ?event({storage_metadata_failed, {id, ID}, {error, Error}}),
+                    http_metadata(ID, Opts)
+            end;
+        false ->
+            http_metadata(ID, Opts)
+    end.
+
+%% @doc Retrieve metadata via HTTP (original implementation).
+http_metadata(ID, Opts) ->
     case head_request(ID, Opts) of
         {ok, Meta} -> {ok, Meta};
         {error, _} -> range_metadata(ID, Opts)
     end.
 
-%% @doc Materialize the bytes defined by a Range header.
+%% @doc Materialize the bytes defined by a Range header, trying storage first.
 read_range(ID, RangeHeader, Meta = #{size := Total}, Opts) when is_binary(RangeHeader) ->
+    case should_use_storage_for_range(ID, Meta, Opts) of
+        true ->
+            ?event({trying_storage_range, {id, ID}}),
+            case storage_read_range(ID, RangeHeader, Meta, Opts) of
+                {ok, Result} ->
+                    ?event({storage_range_success, {id, ID}}),
+                    {ok, Result};
+                Error ->
+                    ?event({storage_range_failed, {id, ID}, {error, Error}}),
+                    http_read_range(ID, RangeHeader, Meta, Opts)
+            end;
+        false ->
+            http_read_range(ID, RangeHeader, Meta, Opts)
+    end;
+read_range(_, _, _, _) -> {error, invalid_arguments}.
+
+%% @doc Materialize bytes via HTTP (original implementation).
+http_read_range(ID, RangeHeader, Meta = #{size := Total}, Opts) ->
     case hb_http_range:parse(RangeHeader, Total) of
         {ok, {Start, End}} ->
             case range_request(ID, Start, End, Meta, Opts) of
@@ -32,13 +75,29 @@ read_range(ID, RangeHeader, Meta = #{size := Total}, Opts) when is_binary(RangeH
             {error, {range_not_satisfiable, Total}};
         {error, invalid_range} ->
             {error, {invalid_range, Total}}
-    end;
-read_range(_, _, _, _) -> {error, invalid_arguments}.
+    end.
 
-%% @doc Fetch the entire body without loading it all at once unless unavoidable.
+%% @doc Fetch the entire body, trying storage first.
 fetch_full(_ID, #{size := 0, content_type := CType}, _Opts) ->
     {ok, #{ data => <<>>, content_type => CType }};
 fetch_full(ID, Meta = #{size := Total}, Opts) when Total > 0 ->
+    case should_use_storage_for_full(ID, Meta, Opts) of
+        true ->
+            ?event({trying_storage_full, {id, ID}}),
+            case storage_fetch_full(ID, Meta, Opts) of
+                {ok, Result} ->
+                    ?event({storage_full_success, {id, ID}}),
+                    {ok, Result};
+                Error ->
+                    ?event({storage_full_failed, {id, ID}, {error, Error}}),
+                    http_fetch_full(ID, Meta, Opts)
+            end;
+        false ->
+            http_fetch_full(ID, Meta, Opts)
+    end.
+
+%% @doc Fetch full body via HTTP (original implementation).
+http_fetch_full(ID, Meta = #{size := Total}, Opts) ->
     End = Total - 1,
     case range_request(ID, 0, End, Meta, Opts) of
         {ok, #{body := Body}} ->
@@ -59,15 +118,43 @@ stream(ID, Meta = #{size := Total}, ChunkFun, Opts) when is_function(ChunkFun, 2
             stream_loop(ID, Meta, 0, ChunkSize, ChunkFun, Opts)
     end.
 
-%% @doc Continue streaming starting from a specific byte offset.
+%% @doc Continue streaming starting from a specific byte offset, trying storage first.
 stream_from(ID, Meta, Offset, ChunkFun, Opts) when is_function(ChunkFun, 2) ->
+    case should_use_storage_for_range(ID, Meta, Opts) of
+        true ->
+            case storage_stream_from(ID, Meta, Offset, ChunkFun, Opts) of
+                {ok, Result} -> {ok, Result};
+                Error ->
+                    ?event({storage_stream_from_failed, {id, ID}, {error, Error}}),
+                    http_stream_from(ID, Meta, Offset, ChunkFun, Opts)
+            end;
+        false ->
+            http_stream_from(ID, Meta, Offset, ChunkFun, Opts)
+    end.
+
+%% @doc Stream from offset via HTTP (original implementation).
+http_stream_from(ID, Meta, Offset, ChunkFun, Opts) ->
     ChunkSize = chunk_size(Opts),
     stream_loop(ID, Meta, Offset, ChunkSize, ChunkFun, Opts).
 
-%% @doc Retrieve the next chunk without mutating state; used for preflight checks.
+%% @doc Retrieve the next chunk, trying storage first.
 next_chunk(_ID, _Meta = #{size := Total}, Offset, _ChunkSize, _Opts) when Offset >= Total ->
     {error, done};
 next_chunk(ID, Meta = #{size := Total}, Offset, ChunkSize, Opts) ->
+    case should_use_storage_for_range(ID, Meta, Opts) of
+        true ->
+            case storage_next_chunk(ID, Meta, Offset, ChunkSize, Opts) of
+                {ok, Result} -> {ok, Result};
+                Error ->
+                    ?event({storage_next_chunk_failed, {id, ID}, {error, Error}}),
+                    http_next_chunk(ID, Meta, Offset, ChunkSize, Opts)
+            end;
+        false ->
+            http_next_chunk(ID, Meta, Offset, ChunkSize, Opts)
+    end.
+
+%% @doc Retrieve next chunk via HTTP (original implementation).
+http_next_chunk(ID, Meta = #{size := Total}, Offset, ChunkSize, Opts) ->
     Normalized = case ChunkSize > 0 of true -> ChunkSize; false -> ?DEFAULT_CHUNK_SIZE end,
     {Start, End, _} = compute_next_range(Offset, Total, Normalized),
     range_request(ID, Start, End, Meta, Opts).
@@ -280,3 +367,171 @@ compute_next_range(_, _, _) -> {0, -1, true}.
 
 final_flag(_RangeEnd, undefined) -> false;
 final_flag(RangeEnd, Total) when is_integer(Total) -> RangeEnd >= Total - 1.
+
+%% Storage-aware helper functions
+
+%% @doc Decide whether to use storage hierarchy for initial requests.
+should_use_storage(ID, Opts) ->
+    case hb_opts:get(use_storage_for_range, true, Opts) of
+        false -> false;
+        true ->
+            % Simple heuristics: try storage for smaller files
+            case is_small_file_hint(ID) of
+                true -> true;
+                false -> false
+            end
+    end.
+
+%% @doc Decide whether to use storage for range requests based on size.
+should_use_storage_for_range(_ID, Meta, Opts) ->
+    case hb_opts:get(use_storage_for_range, true, Opts) of
+        false -> false;
+        true ->
+            Size = maps:get(size, Meta, 0),
+            MaxSize = 100 * 1024 * 1024, % 100MB hardcoded limit
+            Size =< MaxSize
+    end.
+
+%% @doc Decide whether to use storage for full data fetch.
+should_use_storage_for_full(_ID, Meta, Opts) ->
+    should_use_storage_for_range(_ID, Meta, Opts).
+
+%% @doc Get metadata from storage hierarchy.
+storage_metadata(ID, Opts) ->
+    Stores = hb_opts:get(store, [], Opts),
+    storage_metadata_from_stores(ID, Stores, Opts).
+
+storage_metadata_from_stores(_, [], _) -> not_found;
+storage_metadata_from_stores(ID, [Store | Rest], Opts) ->
+    case hb_store:get_size(Store, ID) of
+        {ok, Size} ->
+            {ok, #{
+                size => Size,
+                content_type => detect_content_type(ID, Opts),
+                store => Store
+            }};
+        _ -> storage_metadata_from_stores(ID, Rest, Opts)
+    end.
+
+%% @doc Read range from storage.
+storage_read_range(ID, RangeHeader, Meta = #{size := Total}, Opts) ->
+    case hb_http_range:parse(RangeHeader, Total) of
+        {ok, {Start, End}} ->
+            case maps:get(store, Meta, undefined) of
+                Store when Store =/= undefined ->
+                    storage_range_from_store(Store, ID, Start, End, Meta, Opts);
+                _ ->
+                    Stores = hb_opts:get(store, [], Opts),
+                    storage_range_from_stores(ID, Start, End, Meta, Stores, Opts)
+            end;
+        {error, Reason} -> {error, Reason}
+    end.
+
+storage_range_from_store(Store, ID, Start, End, Meta, _Opts) ->
+    case hb_store:read_range(Store, ID, Start, End) of
+        {ok, Data} ->
+            {ok, #{
+                body => Data,
+                start => Start,
+                range_end => End,
+                total => maps:get(size, Meta),
+                content_type => maps:get(content_type, Meta),
+                final => End >= (maps:get(size, Meta) - 1)
+            }};
+        Error -> Error
+    end.
+
+storage_range_from_stores(_, _, _, _, [], _) -> not_found;
+storage_range_from_stores(ID, Start, End, Meta, [Store | Rest], Opts) ->
+    case storage_range_from_store(Store, ID, Start, End, Meta, Opts) of
+        {ok, Result} -> {ok, Result};
+        _ -> storage_range_from_stores(ID, Start, End, Meta, Rest, Opts)
+    end.
+
+%% @doc Fetch full data from storage.
+storage_fetch_full(ID, Meta, Opts) ->
+    case maps:get(store, Meta, undefined) of
+        Store when Store =/= undefined ->
+            case hb_store:read(Store, ID) of
+                {ok, Data} ->
+                    {ok, #{
+                        data => Data,
+                        content_type => maps:get(content_type, Meta)
+                    }};
+                Error -> Error
+            end;
+        _ ->
+            Stores = hb_opts:get(store, [], Opts),
+            storage_full_from_stores(ID, Meta, Stores)
+    end.
+
+storage_full_from_stores(_, _, []) -> not_found;
+storage_full_from_stores(ID, Meta, [Store | Rest]) ->
+    case hb_store:read(Store, ID) of
+        {ok, Data} ->
+            {ok, #{
+                data => Data,
+                content_type => maps:get(content_type, Meta)
+            }};
+        _ -> storage_full_from_stores(ID, Meta, Rest)
+    end.
+
+%% @doc Simple content type detection.
+detect_content_type(ID, Opts) ->
+    case binary:match(ID, [<<".jpg">>, <<".jpeg">>, <<".png">>, <<".gif">>]) of
+        nomatch ->
+            case binary:match(ID, [<<".json">>, <<".txt">>, <<".md">>]) of
+                nomatch -> hb_opts:get(range_default_content_type, <<"application/octet-stream">>, Opts);
+                _ -> <<"text/plain">>
+            end;
+        _ -> <<"image/jpeg">>
+    end.
+
+%% @doc Simple heuristic to guess if file is likely small.
+is_small_file_hint(ID) ->
+    SmallFilePatterns = [
+        <<".json">>, <<".txt">>, <<".md">>, <<".yml">>, <<".yaml">>,
+        <<".toml">>, <<".ini">>, <<".cfg">>, <<".conf">>,
+        <<"manifest">>, <<"config">>, <<"metadata">>, <<"index">>
+    ],
+    case binary:match(ID, SmallFilePatterns) of
+        nomatch -> false;
+        _ -> true
+    end.
+
+%% @doc Get next chunk from storage.
+storage_next_chunk(_ID, _Meta = #{size := Total}, Offset, _ChunkSize, _Opts) when Offset >= Total ->
+    {error, done};
+storage_next_chunk(ID, Meta, Offset, ChunkSize, Opts) ->
+    Total = maps:get(size, Meta),
+    Normalized = case ChunkSize > 0 of true -> ChunkSize; false -> 1024*1024 end,
+    Start = Offset,
+    End = erlang:min(Start + Normalized - 1, Total - 1),
+    case maps:get(store, Meta, undefined) of
+        Store when Store =/= undefined ->
+            storage_range_from_store(Store, ID, Start, End, Meta, Opts);
+        _ ->
+            Stores = hb_opts:get(store, [], Opts),
+            storage_range_from_stores(ID, Start, End, Meta, Stores, Opts)
+    end.
+
+%% @doc Stream from storage.
+storage_stream_from(ID, Meta, Offset, ChunkFun, Opts) ->
+    ChunkSize = chunk_size(Opts),
+    Total = maps:get(size, Meta),
+    storage_stream_loop(ID, Meta, Offset, Total, ChunkSize, ChunkFun, Opts).
+
+storage_stream_loop(_, _, Offset, Total, _, _, _) when Offset >= Total ->
+    {ok, done};
+storage_stream_loop(ID, Meta, Offset, Total, ChunkSize, ChunkFun, Opts) ->
+    Start = Offset,
+    case storage_next_chunk(ID, Meta, Start, ChunkSize, Opts) of
+        {ok, #{body := Chunk, range_end := RangeEnd}} ->
+            IsFinal = RangeEnd >= Total - 1,
+            ChunkFun(Chunk, IsFinal),
+            case IsFinal of
+                true -> {ok, #{size => Total}};
+                false -> storage_stream_loop(ID, Meta, RangeEnd + 1, Total, ChunkSize, ChunkFun, Opts)
+            end;
+        Error -> Error
+    end.
