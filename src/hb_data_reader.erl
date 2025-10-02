@@ -26,9 +26,17 @@ metadata(ID, Opts) when is_binary(ID), is_map(Opts) ->
         true ->
             ?event({trying_storage_metadata, {id, ID}}),
             case storage_metadata(ID, Opts) of
-                {ok, Meta} ->
+                {ok, StorageMeta} ->
                     ?event({storage_metadata_success, {id, ID}}),
-                    {ok, Meta};
+                    % Storage gave us size, but we need HTTP for accurate content type
+                    case http_metadata(ID, Opts) of
+                        {ok, HttpMeta} ->
+                            % Combine: use storage's store info but HTTP's content type
+                            {ok, StorageMeta#{content_type => maps:get(content_type, HttpMeta)}};
+                        _ ->
+                            % Fall back to storage metadata with default content type
+                            {ok, StorageMeta}
+                    end;
                 Error ->
                     ?event({storage_metadata_failed, {id, ID}, {error, Error}}),
                     http_metadata(ID, Opts)
@@ -81,7 +89,7 @@ http_read_range(ID, RangeHeader, Meta = #{size := Total}, Opts) ->
 fetch_full(_ID, #{size := 0, content_type := CType}, _Opts) ->
     {ok, #{ data => <<>>, content_type => CType }};
 fetch_full(ID, Meta = #{size := Total}, Opts) when Total > 0 ->
-    case should_use_storage_for_full(ID, Meta, Opts) of
+    case should_use_storage_for_range(ID, Meta, Opts) of
         true ->
             ?event({trying_storage_full, {id, ID}}),
             case storage_fetch_full(ID, Meta, Opts) of
@@ -372,15 +380,7 @@ final_flag(RangeEnd, Total) when is_integer(Total) -> RangeEnd >= Total - 1.
 
 %% @doc Decide whether to use storage hierarchy for initial requests.
 should_use_storage(ID, Opts) ->
-    case hb_opts:get(use_storage_for_range, true, Opts) of
-        false -> false;
-        true ->
-            % Simple heuristics: try storage for smaller files
-            case is_small_file_hint(ID) of
-                true -> true;
-                false -> false
-            end
-    end.
+    hb_opts:get(use_storage_for_range, true, Opts).
 
 %% @doc Decide whether to use storage for range requests based on size.
 should_use_storage_for_range(_ID, Meta, Opts) ->
@@ -392,9 +392,6 @@ should_use_storage_for_range(_ID, Meta, Opts) ->
             Size =< MaxSize
     end.
 
-%% @doc Decide whether to use storage for full data fetch.
-should_use_storage_for_full(_ID, Meta, Opts) ->
-    should_use_storage_for_range(_ID, Meta, Opts).
 
 %% @doc Get metadata from storage hierarchy.
 storage_metadata(ID, Opts) ->
@@ -405,13 +402,16 @@ storage_metadata_from_stores(_, [], _) -> not_found;
 storage_metadata_from_stores(ID, [Store | Rest], Opts) ->
     case hb_store:get_size(Store, ID) of
         {ok, Size} ->
+            % For storage metadata, we can't reliably get content type
+            % Fall back to default for now - HTTP metadata will be used for accurate content type
             {ok, #{
                 size => Size,
-                content_type => detect_content_type(ID, Opts),
+                content_type => hb_opts:get(range_default_content_type, <<"application/octet-stream">>, Opts),
                 store => Store
             }};
         _ -> storage_metadata_from_stores(ID, Rest, Opts)
     end.
+
 
 %% @doc Read range from storage.
 storage_read_range(ID, RangeHeader, Meta = #{size := Total}, Opts) ->
@@ -476,28 +476,6 @@ storage_full_from_stores(ID, Meta, [Store | Rest]) ->
         _ -> storage_full_from_stores(ID, Meta, Rest)
     end.
 
-%% @doc Simple content type detection.
-detect_content_type(ID, Opts) ->
-    case binary:match(ID, [<<".jpg">>, <<".jpeg">>, <<".png">>, <<".gif">>]) of
-        nomatch ->
-            case binary:match(ID, [<<".json">>, <<".txt">>, <<".md">>]) of
-                nomatch -> hb_opts:get(range_default_content_type, <<"application/octet-stream">>, Opts);
-                _ -> <<"text/plain">>
-            end;
-        _ -> <<"image/jpeg">>
-    end.
-
-%% @doc Simple heuristic to guess if file is likely small.
-is_small_file_hint(ID) ->
-    SmallFilePatterns = [
-        <<".json">>, <<".txt">>, <<".md">>, <<".yml">>, <<".yaml">>,
-        <<".toml">>, <<".ini">>, <<".cfg">>, <<".conf">>,
-        <<"manifest">>, <<"config">>, <<"metadata">>, <<"index">>
-    ],
-    case binary:match(ID, SmallFilePatterns) of
-        nomatch -> false;
-        _ -> true
-    end.
 
 %% @doc Get next chunk from storage.
 storage_next_chunk(_ID, _Meta = #{size := Total}, Offset, _ChunkSize, _Opts) when Offset >= Total ->
