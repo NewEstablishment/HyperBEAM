@@ -608,7 +608,13 @@ read_resolved(BaseMsg, Key, Opts) when is_binary(Key) ->
 read_resolved({link, ID, LinkOpts}, Req, Opts) ->
     read_resolved(ID, Req, maps:merge(LinkOpts, Opts));
 read_resolved(BaseMsgID, Req = #{ <<"path">> := Key }, Opts) when ?IS_ID(BaseMsgID) ->
-    Store = hb_opts:get(store, no_viable_store, Opts),
+    StoreFromOpts = hb_opts:get(store, no_viable_store, Opts),
+    Store =
+        case StoreFromOpts of
+            [] -> hb_opts:get(store, no_viable_store, hb_http_server:get_opts());
+            no_viable_store -> hb_opts:get(store, no_viable_store, hb_http_server:get_opts());
+            _ -> StoreFromOpts
+        end,
     NormKey = hb_ao:normalize_key(Key, Opts),
     case hb_ao_device:is_direct_key_access(BaseMsgID, Req, Opts, Store) of
         unknown -> miss;
@@ -625,14 +631,22 @@ read_resolved(BaseMsgID, Req = #{ <<"path">> := Key }, Opts) when ?IS_ID(BaseMsg
             % that the default (`message@1.0`) device will be used to execute
             % the key. Subsequently, we can simply read the key and return it if
             % it exists.
+            % Important: do not pre-resolve across the chain. Let each store
+            % handle its own resolution for [BaseID, Key] so that fallback to
+            % gateway continues to use ID/key semantics instead of an S3-only
+            % resolved path like data/<sha>.
             ?event(read_cached,
                 {skipping_execution_store_lookup,
                     {base_msg, BaseMsgID},
                     {key, NormKey}
                 }
             ),
-            KeyPath = hb_store:resolve(Store, [BaseMsgID, Key]),
-            {hit, read(KeyPath, Opts)}
+            {hit,
+                case hb_store:read(Store, [BaseMsgID, Key]) of
+                    {ok, V} -> {ok, V};
+                    not_found -> not_found
+                end
+            }
     end;
 read_resolved(BaseMsg, Req = #{ <<"path">> := Key }, Opts) when is_map(BaseMsg) ->
     % The base message is loaded, so we determine if it has an explicit device

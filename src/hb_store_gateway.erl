@@ -53,11 +53,16 @@ read(BaseStoreOpts, Key) ->
                     not_found;
                 {ok, Message} ->
                     ?event({read_found, {key, ID}}),
-                    try hb_store_remote_node:maybe_cache(StoreOpts, Message)
-                    catch _:_ -> ignored end,
                     case Rest of
-                        [] -> {ok, Message};
+                        [] ->
+                            % Only cache when fetching the full message, not subpaths
+                            try hb_store_remote_node:maybe_cache(StoreOpts, Message)
+                            catch _:_ -> ignored end,
+                            {ok, Message};
                         _ ->
+                            % Don't cache when fetching subpaths - this prevents
+                            % re-uploading entire messages when only missing fields
+                            % are requested
                             case hb_util:deep_get(Rest, Message, StoreOpts) of
                                 not_found -> not_found;
                                 Value -> {ok, Value}
