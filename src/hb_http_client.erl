@@ -4,7 +4,7 @@
 -behaviour(gen_server).
 -include("include/hb.hrl").
 -export([start_link/1, request/2]).
--export([init/1, handle_cast/2, handle_call/3, handle_info/2, terminate/2, open_connection/2]).
+-export([init/1, handle_cast/2, handle_call/3, handle_info/2, terminate/2]).
 
 -record(state, {
 	pid_by_peer = #{},
@@ -154,7 +154,7 @@ gun_req(Args, ReestablishedConnection, Opts) ->
                     Reply ->
                         Reply
                 end;
-            {'EXIT', Reason} ->
+            {'EXIT', _} ->
                 {error, client_error};
             Error ->
                 Error

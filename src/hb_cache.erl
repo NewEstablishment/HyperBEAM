@@ -385,7 +385,6 @@ read(Path, Opts) ->
 %% @doc List all of the subpaths of a given path and return a map of keys and
 %% links to the subpaths, including their types.
 store_read(_Path, no_viable_store, _) ->
-    erlang:display("NO_VIABLE_STORE"),
     not_found;
 store_read(Path, Store, Opts) ->
     ResolvedFullPath = hb_store:resolve(Store, PathBin = hb_path:to_binary(Path)),
@@ -395,16 +394,12 @@ store_read(Path, Store, Opts) ->
         {store, Store}
     }),
     case hb_store:type(Store, ResolvedFullPath) of
-        not_found -> 
-            erlang:display({type_not_found, {resolved_full_path, ResolvedFullPath}}),
-            not_found;
+        not_found -> not_found;
         simple ->
             ?event({reading_data, ResolvedFullPath}),
             case hb_store:read(Store, ResolvedFullPath) of
                 {ok, Bin} -> {ok, Bin};
-                not_found -> 
-                    erlang:display("NOT FOUND"),
-                    not_found
+                not_found -> not_found
             end;
         composite ->
             ?event({reading_composite, ResolvedFullPath}),
@@ -888,9 +883,7 @@ test_message_with_list(Store) ->
     {ok, RetrievedItem} = read(Path, Opts),
     ?assert(hb_message:match(Msg, RetrievedItem, strict, Opts)).
 
-test_match_message(Store) when map_get(<<"store-module">>, Store) =/= hb_store_lmdb ->    
-    Module = map_get(<<"store-module">>, Store),
-    ?event({test_skip, {module, Module}}),
+test_match_message(Store) when map_get(<<"store-module">>, Store) =/= hb_store_lmdb ->
     skip;
 test_match_message(Store) ->
     hb_store:reset(Store),
@@ -918,8 +911,6 @@ test_match_message(Store) ->
     ?assertEqual([ID2b], MatchedItems2).
 
 test_match_linked_message(Store) when map_get(<<"store-module">>, Store) =/= hb_store_lmdb ->
-    Module = map_get(<<"store-module">>, Store),
-    ?event({test_skip, {module, Module}}),
     skip;
 test_match_linked_message(Store) ->
     hb_store:reset(Store),
@@ -937,8 +928,6 @@ test_match_linked_message(Store) ->
     ?assertEqual(#{ <<"a">> => Inner }, ensure_all_loaded(Read2, Opts)).
 
 test_match_typed_message(Store) when map_get(<<"store-module">>, Store) =/= hb_store_lmdb ->
-    Module = map_get(<<"store-module">>, Store),
-    ?event({test_skip, {module, Module}}),
     skip;
 test_match_typed_message(Store) ->
     hb_store:reset(Store),
