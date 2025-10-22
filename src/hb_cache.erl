@@ -470,12 +470,16 @@ store_read(Target, Path, Store, Opts) ->
         {store, Store}
     }),
     case hb_store:type(Store, ResolvedFullPath) of
-        not_found -> not_found;
+        not_found -> 
+            erlang:display({type_not_found, {resolved_full_path, ResolvedFullPath}}),
+            not_found;
         simple ->
             ?event({reading_data, ResolvedFullPath}),
             case hb_store:read(Store, ResolvedFullPath) of
                 {ok, Bin} -> {ok, Bin};
-                not_found -> not_found
+                not_found -> 
+                    erlang:display("NOT FOUND"),
+                    not_found
             end;
         composite ->
             ?event({reading_composite, ResolvedFullPath}),
