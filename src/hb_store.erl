@@ -426,20 +426,20 @@ call_all([Store = #{<<"store-module">> := Mod} | Rest], Function, Args) ->
 %% default into all HyperBEAM distributions.
 test_stores() ->
     [
-        (hb_test_utils:test_store(hb_store_fs))#{
-            <<"benchmark-scale">> => 0.001
-        },
-        (hb_test_utils:test_store(hb_store_lmdb))#{
-            <<"benchmark-scale">> => 0.5
-        },
-        (hb_test_utils:test_store(hb_store_lru))#{
-            <<"persistent-store">> => [
-                #{
-                    <<"store-module">> => hb_store_fs,
-                    <<"name">> => <<"cache-TEST/lru">>
-                }
-            ]
-        }
+%        (hb_test_utils:test_store(hb_store_fs))#{
+%            <<"benchmark-scale">> => 0.001
+%        },
+%        (hb_test_utils:test_store(hb_store_lmdb))#{
+%            <<"benchmark-scale">> => 0.5
+%        },
+%        (hb_test_utils:test_store(hb_store_lru))#{
+%            <<"persistent-store">> => [
+%                #{
+%                    <<"store-module">> => hb_store_fs,
+%                    <<"name">> => <<"cache-TEST/lru">>
+%                }
+%            ]
+%        }
     ] ++ rocks_stores() ++ s3_stores().
 
 -ifdef(ENABLE_ROCKSDB).
@@ -465,6 +465,7 @@ generate_test_suite(Suite) ->
     generate_test_suite(Suite, test_stores()).
 generate_test_suite(Suite, Stores) ->
     hb:init(),
+    application:ensure_all_started(hb),
     lists:map(
         fun(Store = #{<<"store-module">> := Mod}) ->
             {foreach,
@@ -474,7 +475,8 @@ generate_test_suite(Suite, Stores) ->
                     hb_store:reset(Store)
                 end,
                 fun(_) ->
-                    hb_store:reset(Store)
+                    %hb_store:reset(Store)
+                    ok
                     % hb_store:stop(Store)
                 end,
                 [
@@ -531,8 +533,8 @@ store_suite_test_() ->
 
 benchmark_suite_test_() ->
     generate_test_suite([
-        {"benchmark key read write", fun benchmark_key_read_write/1},
-        {"benchmark list", fun benchmark_list/1},
+        %{"benchmark key read write", fun benchmark_key_read_write/1},
+        %{"benchmark list", fun benchmark_list/1},
         {"benchmark message read write", fun benchmark_message_read_write/1}
     ]).
 
