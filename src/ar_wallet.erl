@@ -57,7 +57,19 @@ verify({{rsa, PublicExpnt}, Pub}, Data, Sig, DigestType) when PublicExpnt =:= 65
             publicExponent = PublicExpnt,
             modulus = binary:decode_unsigned(Pub)
         }
-    ).
+    );
+verify({ed25519, PubKey}, Data, Sig, _DigestType) when 
+      byte_size(PubKey) == 32 andalso byte_size(Sig) == 64 ->
+    public_key:verify(Data, ignored, Sig, {ed_pub, ed25519, PubKey});
+verify({solana, PubKey}, Data, Sig, _DigestType) when 
+      byte_size(PubKey) == 32 andalso byte_size(Sig) == 64 ->
+    public_key:verify(Data, ignored, Sig, {ed_pub, ed25519, PubKey});
+verify({injected_aptos, PubKey}, Data, Sig, _DigestType) when 
+      byte_size(PubKey) == 32 andalso byte_size(Sig) == 64 ->
+    Nonce = <<"bundlr">>,
+    DataHex = binary:encode_hex(Data, lowercase),
+    Message = <<"APTOS", 0, "message: ", 0, DataHex/binary, 0, "nonce: ", Nonce/binary>>,
+    public_key:verify(Message, ignored, Sig, {ed_pub, ed25519, PubKey}).
 
 %% @doc Find a public key from a wallet.
 to_pubkey(Pubkey) ->
