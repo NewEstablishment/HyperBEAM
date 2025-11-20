@@ -66,7 +66,6 @@ verify({{eddsa, Curve}, Pub}, Data, Sig, _DigestType) when
       byte_size(Pub) == 32 andalso byte_size(Sig) == 64 andalso Curve =:= ed25519 ->
     crypto:verify(eddsa, none, Data, Sig, [Pub, Curve]).
 
-
 %% @doc Find a public key from a wallet.
 to_pubkey(Pubkey) ->
     to_pubkey(Pubkey, ?DEFAULT_KEY_TYPE).
