@@ -97,6 +97,10 @@ verify_item(DataItem) ->
     ValidID = verify_data_item_id(DataItem),
     ValidSignature = verify_data_item_signature(DataItem),
     ValidTags = verify_data_item_tags(DataItem),
+    ?event({verify_item,
+        {id, ValidID},
+        {signature, ValidSignature},
+        {tags, ValidTags}}),
     ValidID andalso ValidSignature andalso ValidTags.
 
 %%%===================================================================
@@ -129,7 +133,7 @@ enforce_valid_tx(TX) ->
         {invalid_field, anchor, TX#tx.anchor}
     ),
     hb_util:ok_or_throw(TX,
-        hb_util:check_size(TX#tx.owner, [0, byte_size(?DEFAULT_OWNER)]),
+        hb_util:check_size(TX#tx.owner, [0, 32,  byte_size(?DEFAULT_OWNER)]),
         {invalid_field, owner, TX#tx.owner}
     ),
     hb_util:ok_or_throw(TX,
@@ -137,7 +141,7 @@ enforce_valid_tx(TX) ->
         {invalid_field, target, TX#tx.target}
     ),
     hb_util:ok_or_throw(TX,
-        hb_util:check_size(TX#tx.signature, [0, 65, byte_size(?DEFAULT_SIG)]),
+        hb_util:check_size(TX#tx.signature, [0, 64, 65, byte_size(?DEFAULT_SIG)]),
         {invalid_field, signature, TX#tx.signature}
     ),
     hb_util:ok_or_throw(TX,
@@ -184,14 +188,18 @@ data_item_signature_data(RawItem) ->
     ar_deep_hash:hash([
         utf8_encoded("dataitem"),
         utf8_encoded("1"),
-        %% Only SignatureType 1 is supported for now (RSA 4096)
-        utf8_encoded("1"),
+        utf8_encoded(get_signature_type(Item#tx.signature_type)),
         <<(Item#tx.owner)/binary>>,
         <<(Item#tx.target)/binary>>,
         <<(Item#tx.anchor)/binary>>,
         encode_tags(Item#tx.tags),
         <<(Item#tx.data)/binary>>
     ]).
+
+get_signature_type({rsa, 65537}) -> <<"1">>;
+get_signature_type(ed25519) -> <<"2">>;
+get_signature_type(solana) -> <<"4">>;
+get_signature_type(injected_aptos) -> <<"5">>.
 
 %% @doc Verify the data item's ID matches the signature.
 verify_data_item_id(DataItem) ->
