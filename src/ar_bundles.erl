@@ -97,10 +97,6 @@ verify_item(DataItem) ->
     ValidID = verify_data_item_id(DataItem),
     ValidSignature = verify_data_item_signature(DataItem),
     ValidTags = verify_data_item_tags(DataItem),
-    ?event({verify_item,
-        {id, ValidID},
-        {signature, ValidSignature},
-        {tags, ValidTags}}),
     ValidID andalso ValidSignature andalso ValidTags.
 
 %%%===================================================================
@@ -197,7 +193,7 @@ data_item_signature_data(RawItem) ->
     ]).
 
 get_signature_type({rsa, 65537}) -> "1";
-get_signature_type(ed25519) -> "2".
+get_signature_type({eddsa, ed25519}) -> "2".
 
 %% @doc Verify the data item's ID matches the signature.
 verify_data_item_id(DataItem) ->

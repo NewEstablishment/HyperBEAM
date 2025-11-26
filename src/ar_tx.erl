@@ -836,3 +836,27 @@ tx_to_json_struct_failure_test() ->
         end,
         FailureCases
     ).
+
+%% TODO: Move to the proper place 
+ed25519_verify_valid_test() ->
+    application:ensure_all_started(hb),
+    ID = <<"1rTy7gQuK9lJydlKqCEhtGLp2WWG-GOrVo5JdiCmaxs">>,
+    {ok, Data} = hb_gateway_client:data(ID, #{}),
+    PublicKey = <<42,183,56,140,176,233,209,5,127,163,72,53,49,236,186,130,211,130,140,225,211,232,192,141,45,12,157,249,161,137,243,82>>,
+    Anchor = <<"ZbExyvGrJKOJTJcHMtKzoOZVCQBkjZ+5">>,
+    Signature = <<195,61,110,250,0,176,46,214,165,148,100,201,169,114,248,103,197,128,202,114,63,81,94,116,107,255,65,7,68,173,199,26,58,68,236,61,193,62,61,52,131,1,254,201,159,40,41,69,220,171,220,63,189,140,40,102,164,20,75,145,199,246,231,8>>,
+    TX = dev_arweave_common:reset_ids(#tx{
+        format = 1,
+        signature_type = {eddsa, ed25519},
+        signature = Signature,
+        owner = PublicKey,
+        target = <<>>,
+        anchor = Anchor,
+        data = Data,
+        data_size = byte_size(Data),
+        tags = [{<<"Content-Type">>,<<"image/png">>}]
+    }),
+    ?assert(ar_bundles:verify_item(TX), TX#tx.format).
+    %% verifysignature does work becasue it is for a proper TX not an Data Item
+    %?assert(verify_signature(TX), TX#tx.format),
+    %%?assert(verify(TX), TX#tx.format),
