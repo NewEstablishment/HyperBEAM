@@ -196,10 +196,8 @@ data_item_signature_data(RawItem) ->
         <<(Item#tx.data)/binary>>
     ]).
 
-get_signature_type({rsa, 65537}) -> <<"1">>;
-get_signature_type(ed25519) -> <<"2">>;
-get_signature_type(solana) -> <<"4">>;
-get_signature_type(injected_aptos) -> <<"5">>.
+get_signature_type({rsa, 65537}) -> "1";
+get_signature_type(ed25519) -> "2".
 
 %% @doc Verify the data item's ID matches the signature.
 verify_data_item_id(DataItem) ->
