@@ -711,7 +711,7 @@ tx_to_json_struct_happy_test() ->
         id             = crypto:strong_rand_bytes(32),
         anchor         = crypto:strong_rand_bytes(32),
         owner          = Owner,
-        signature_type = ?EDDSA_KEY_TYPE, 
+        signature_type = ?RSA_KEY_TYPE, 
         owner_address  = ar_wallet:to_address(Owner, ?RSA_KEY_TYPE), %% Not in JSON
         tags           = [],
         target         = <<>>,

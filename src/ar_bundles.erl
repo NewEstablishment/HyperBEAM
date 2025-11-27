@@ -771,6 +771,31 @@ bundle_map_with_eddsa_test() ->
     ?assertEqual(Item1#tx.data, (maps:get(<<"key1">>, BundleItem#tx.data))#tx.data),
     ?assert(verify_item(BundleItem)).
 
+eddsa_cases_test() -> 
+    Key = ar_wallet:new(?EDDSA_KEY_TYPE),
+    %% Owner and SignatureType defined during signing process.
+    Item1 = sign_item(#tx{
+        format = ans104,
+        target = crypto:strong_rand_bytes(32),
+        anchor = crypto:strong_rand_bytes(32),
+        tags = [{<<"tag1">>, <<"value1">>}, {<<"tag2">>, <<"value2">>}],
+        data = <<"item1_data">>
+    }, Key),
+    Bundle = serialize(dev_arweave_common:normalize(Item1)),
+    BundleItem = deserialize(Bundle),
+    %% Sign a valid transaction and then do not provide
+    ?assert(verify_item(BundleItem)),
+    %% Missing Anchor should fail
+    ?assertNot(verify_item(BundleItem#tx{anchor = <<>>})),
+    %% Tags
+    ?assertNot(verify_item(BundleItem#tx{tags = []})),
+    %% Owner 
+    ?assertNot(verify_item(BundleItem#tx{owner = crypto:strong_rand_bytes(32)})),
+    %% Target
+    ?assertNot(verify_item(BundleItem#tx{target = <<>>})),
+    %% Data
+    ?assertNot(verify_item(BundleItem#tx{data = <<>>})),
+    ok.
 
 extremely_large_bundle_test() ->
     W = ar_wallet:new(),
