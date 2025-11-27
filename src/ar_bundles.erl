@@ -318,6 +318,8 @@ to_serialized_pair(Item, false, Signed) ->
 %% little-endian format which is why we encode to `<<1, 0>>'.
 encode_signature_type({rsa, 65537}) ->
     <<1, 0>>;
+encode_signature_type({eddsa, ed25519}) ->
+    <<2, 0>>;
 encode_signature_type(_) ->
     unsupported_tx_format.
 
@@ -500,6 +502,8 @@ decode_bundle_header(Count, <<Size:256/little-integer, ID:32/binary, Rest/binary
 %% little-endian format which is why we match on `<<1, 0>>'.
 decode_signature(<<1, 0, Signature:512/binary, Owner:512/binary, Rest/binary>>) ->
     {{rsa, 65537}, Signature, Owner, Rest};
+decode_signature(<<2, 0, Signature:64/binary, Owner:32/binary, Rest/binary>>) ->
+    {{eddsa, ed25519}, Signature, Owner, Rest};
 decode_signature(Other) ->
     ?event({error_decoding_signature,
         {sig_type, {explicit, binary:part(Other, 0, 2)}},
@@ -750,6 +754,23 @@ bundle_map_test() ->
     BundleItem = deserialize(Bundle),
     ?assertEqual(Item1#tx.data, (maps:get(<<"key1">>, BundleItem#tx.data))#tx.data),
     ?assert(verify_item(BundleItem)).
+
+bundle_map_with_eddsa_test() ->
+    W = ar_wallet:new(?EDDSA_KEY_TYPE),
+    Item1 = sign_item(#tx{
+        format = ans104,
+        data = <<"item1_data">>
+    }, W),
+    Item2 = sign_item(#tx{
+        format = ans104,
+        anchor = crypto:strong_rand_bytes(32),
+        data = #{<<"key1">> => Item1}
+    }, W),
+    Bundle = serialize(dev_arweave_common:normalize(Item2)),
+    BundleItem = deserialize(Bundle),
+    ?assertEqual(Item1#tx.data, (maps:get(<<"key1">>, BundleItem#tx.data))#tx.data),
+    ?assert(verify_item(BundleItem)).
+
 
 extremely_large_bundle_test() ->
     W = ar_wallet:new(),

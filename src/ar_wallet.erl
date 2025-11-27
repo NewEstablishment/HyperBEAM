@@ -19,8 +19,9 @@ new(KeyType = {KeyAlg, PublicExpnt}) when KeyType =:= {rsa, 65537} ->
         = crypto:generate_key(KeyAlg, {4096, PublicExpnt}),
     {{KeyType, Priv, Pub}, {KeyType, Pub}};
 new(KeyType = {KeyAlg, Curve}) when KeyType =:= {?EDDSA_SIGN_ALG, ed25519} -> 
-    {Priv, Pub} = crypto:generate_key(KeyAlg, Curve),
-    {{KeyType, Priv, Pub},{KeyType, Pub}}.
+    {Pub, Priv} = crypto:generate_key(KeyAlg, Curve),
+    {{KeyType, Priv, Pub}, {KeyType, Pub}}.
+    %{{ed_pri, Curve, Pub, Priv}, {ed_pub, Curve, Pub}}.
 
 %% @doc Sign some data with a private key.
 sign(Key, Data) ->
@@ -38,8 +39,8 @@ sign({{rsa, PublicExpnt}, Priv, Pub}, Data, DigestType) when PublicExpnt =:= 655
             privateExponent = binary:decode_unsigned(Priv)
         }
     );
-sign({KeyType = {_KeyAlg, Curve}, Priv, _Pub}, Data, DigestType) when KeyType =:= {?EDDSA_SIGN_ALG, ed25519} ->
-    crypto:sign(Curve, DigestType, Data, Priv);
+sign({KeyType = {KeyAlg, Curve}, Priv, _Pub}, Data, DigestType) when KeyType =:= {?EDDSA_SIGN_ALG, ed25519} ->
+    crypto:sign(KeyAlg, DigestType, Data, [Priv, Curve]);
 sign({{KeyType, Priv, Pub}, {KeyType, Pub}}, Data, DigestType) ->
     sign({KeyType, Priv, Pub}, Data, DigestType).
 
@@ -62,10 +63,9 @@ verify({{rsa, PublicExpnt}, Pub}, Data, Sig, DigestType) when PublicExpnt =:= 65
             modulus = binary:decode_unsigned(Pub)
         }
     );
-verify({{eddsa, ed25519}, Pub}, Data, Sig, _DigestType) when
-      byte_size(Pub) == 32 andalso byte_size(Sig) == 64 ->
-    %public_key:verify(Data, DigestType, Sig, {ed_pub, ed25519, Pub}).
-    crypto:verify(eddsa, none, Data, Sig, [Pub, ed25519]).
+verify({{eddsa, Curve}, Pub}, Data, Sig, _DigestType) when
+      byte_size(Pub) == 32 andalso byte_size(Sig) == 64 andalso Curve =:= ed25519 ->
+    crypto:verify(eddsa, none, Data, Sig, [Pub, Curve]).
 
 
 %% @doc Find a public key from a wallet.
