@@ -442,7 +442,9 @@ l2_dataitem_ed25519_test() ->
     Data = maps:get(<<"data">>, Res),
     CommitmentType = hb_util:deep_get([<<"commitments">>, ID, <<"type">>], Res, not_found),
     ?assertEqual(<<"ed25519">>, CommitmentType),
-    erlang:display(Res),
+    CommitmentCommitter = hb_util:deep_get([<<"commitments">>, ID, <<"committer">>], Res, not_found),
+    ?assertEqual(<<"ejhYD9Cw9VCsVik6yGLoclo3CLRvAITHTZamLY_6ro4">>, CommitmentCommitter),
+    %% Check Data
     ?assertEqual(<<"{\"displayName\":\"Test Hub\",\"description\":\"This is a test hub created in the test suite\",\"externalurl\":\"\",\"image\":\"\"}">>, Data).
 
 %% @doc Test optimistic index
