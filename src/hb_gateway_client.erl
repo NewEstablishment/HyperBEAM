@@ -428,7 +428,13 @@ l2_dataitem_test() ->
     ID = <<"oyo3_hCczcU7uYhfByFZ3h0ELfeMMzNacT-KpRoJK6g">>,
     {ok, Res} = read(ID, #{}),
     ?event(gateway, {l2_dataitem, Res}),
-    CommitmentType = hb_util:deep_get([<<"commitments">>, ID, <<"type">>], Res, not_found),
+    Opts = #{},
+    CommitmentType = hb_util:deep_get(
+        [<<"commitments">>, ID, <<"type">>],
+        Res,
+        not_found,
+        Opts
+    ),
     ?assertEqual(<<"rsa-pss-sha256">>, CommitmentType),
     Data = maps:get(<<"data">>, Res),
     ?assertEqual(<<"Hello World">>, Data).
@@ -439,12 +445,23 @@ l2_dataitem_ed25519_test() ->
     ID = <<"AwrAs-HaBlc8xeI8sw6Wpbi7A0weQWeXYwW20CpX5oM">>,
     {ok, Res} = read(ID, #{}),
     ?event(gateway, {l2_dataitem, Res}),
-    Data = maps:get(<<"data">>, Res),
-    CommitmentType = hb_util:deep_get([<<"commitments">>, ID, <<"type">>], Res, not_found),
+    Opts = #{},
+    CommitmentType = hb_util:deep_get(
+        [<<"commitments">>, ID, <<"type">>],
+        Res,
+        not_found,
+        Opts
+    ),
     ?assertEqual(<<"ed25519">>, CommitmentType),
-    CommitmentCommitter = hb_util:deep_get([<<"commitments">>, ID, <<"committer">>], Res, not_found),
+    CommitmentCommitter = hb_util:deep_get(
+        [<<"commitments">>, ID, <<"committer">>],
+        Res,
+        not_found,
+        Opts
+    ),
     ?assertEqual(<<"ejhYD9Cw9VCsVik6yGLoclo3CLRvAITHTZamLY_6ro4">>, CommitmentCommitter),
     %% Check Data
+    Data = maps:get(<<"data">>, Res),
     ?assertEqual(<<"{\"displayName\":\"Test Hub\",\"description\":\"This is a test hub created in the test suite\",\"externalurl\":\"\",\"image\":\"\"}">>, Data).
 
 %% @doc Test optimistic index
