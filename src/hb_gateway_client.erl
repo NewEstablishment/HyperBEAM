@@ -425,10 +425,25 @@ l1_transaction_test() ->
 %% @doc Test l2 message from graphql
 l2_dataitem_test() ->
     _Node = hb_http_server:start_node(#{}),
-    {ok, Res} = read(<<"oyo3_hCczcU7uYhfByFZ3h0ELfeMMzNacT-KpRoJK6g">>, #{}),
+    ID = <<"oyo3_hCczcU7uYhfByFZ3h0ELfeMMzNacT-KpRoJK6g">>,
+    {ok, Res} = read(ID, #{}),
     ?event(gateway, {l2_dataitem, Res}),
+    CommitmentType = hb_util:deep_get([<<"commitments">>, ID, <<"type">>], Res, not_found),
+    ?assertEqual(<<"rsa-pss-sha256">>, CommitmentType),
     Data = maps:get(<<"data">>, Res),
     ?assertEqual(<<"Hello World">>, Data).
+
+%% @doc ed25519 L2 Transaction test
+l2_dataitem_ed25519_test() ->
+    _Node = hb_http_server:start_node(#{}),
+    ID = <<"AwrAs-HaBlc8xeI8sw6Wpbi7A0weQWeXYwW20CpX5oM">>,
+    {ok, Res} = read(ID, #{}),
+    ?event(gateway, {l2_dataitem, Res}),
+    Data = maps:get(<<"data">>, Res),
+    CommitmentType = hb_util:deep_get([<<"commitments">>, ID, <<"type">>], Res, not_found),
+    ?assertEqual(<<"ed25519">>, CommitmentType),
+    erlang:display(Res),
+    ?assertEqual(<<"{\"displayName\":\"Test Hub\",\"description\":\"This is a test hub created in the test suite\",\"externalurl\":\"\",\"image\":\"\"}">>, Data).
 
 %% @doc Test optimistic index
 ao_dataitem_test() ->

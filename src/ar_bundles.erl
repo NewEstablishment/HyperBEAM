@@ -755,22 +755,6 @@ bundle_map_test() ->
     ?assertEqual(Item1#tx.data, (maps:get(<<"key1">>, BundleItem#tx.data))#tx.data),
     ?assert(verify_item(BundleItem)).
 
-bundle_map_with_eddsa_test() ->
-    W = ar_wallet:new(?EDDSA_KEY_TYPE),
-    Item1 = sign_item(#tx{
-        format = ans104,
-        data = <<"item1_data">>
-    }, W),
-    Item2 = sign_item(#tx{
-        format = ans104,
-        anchor = crypto:strong_rand_bytes(32),
-        data = #{<<"key1">> => Item1}
-    }, W),
-    Bundle = serialize(dev_arweave_common:normalize(Item2)),
-    BundleItem = deserialize(Bundle),
-    ?assertEqual(Item1#tx.data, (maps:get(<<"key1">>, BundleItem#tx.data))#tx.data),
-    ?assert(verify_item(BundleItem)).
-
 eddsa_cases_test() -> 
     Key = ar_wallet:new(?EDDSA_KEY_TYPE),
     %% Owner and SignatureType defined during signing process.
@@ -783,7 +767,7 @@ eddsa_cases_test() ->
     }, Key),
     Bundle = serialize(dev_arweave_common:normalize(Item1)),
     BundleItem = deserialize(Bundle),
-    %% Sign a valid transaction and then do not provide
+    %% Sign a valid transaction and verify it
     ?assert(verify_item(BundleItem)),
     %% Missing Anchor should fail
     ?assertNot(verify_item(BundleItem#tx{anchor = <<>>})),

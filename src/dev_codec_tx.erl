@@ -218,7 +218,7 @@ enforce_valid_tx(TX) ->
         {invalid_field, data_root, TX#tx.data_root}
     ),
     hb_util:ok_or_throw(TX,
-        hb_util:check_size(TX#tx.signature, [64, 65, byte_size(?DEFAULT_SIG)]),
+        hb_util:check_size(TX#tx.signature, [65, byte_size(?DEFAULT_SIG)]),
         {invalid_field, signature, TX#tx.signature}
     ),
     hb_util:ok_or_throw(TX,
@@ -305,7 +305,6 @@ enforce_valid_tx_test() ->
     SigInvalidSize66 = crypto:strong_rand_bytes(66),
     SigInvalidSize511 = crypto:strong_rand_bytes(511),
     SigTooLong513 = crypto:strong_rand_bytes(byte_size(?DEFAULT_SIG)+1),
-    
 
     FailureCases = [
         {not_a_tx_record, not_a_tx_record_atom, {invalid_tx, not_a_tx_record_atom}},
@@ -326,6 +325,7 @@ enforce_valid_tx_test() ->
         {data_root_too_short_31, BaseTX#tx{data_root = BadID31}, {invalid_field, data_root, BadID31}},
         {data_root_too_long_33, BaseTX#tx{data_root = BadID33}, {invalid_field, data_root, BadID33}},
         {signature_invalid_size_1, BaseTX#tx{signature = SigInvalidSize1}, {invalid_field, signature, SigInvalidSize1}},
+        {signature_invalid_size_64, BaseTX#tx{signature = SigInvalidSize64}, {invalid_field, signature, SigInvalidSize64}},
         {signature_invalid_size_66, BaseTX#tx{signature = SigInvalidSize66}, {invalid_field, signature, SigInvalidSize66}},
         {signature_invalid_size_511, BaseTX#tx{signature = SigInvalidSize511}, {invalid_field, signature, SigInvalidSize511}},
         {signature_too_long_513, BaseTX#tx{signature = SigTooLong513}, {invalid_field, signature, SigTooLong513}},
