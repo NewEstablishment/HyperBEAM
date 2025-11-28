@@ -91,7 +91,7 @@ to_address(PubKey, {rsa, 65537}) ->
 to_address(PubKey, {ecdsa, 256}) ->
 	to_ecdsa_address(PubKey);
 to_address(PubKey, {eddsa, ed25519}) -> 
-    arweave_ao_address(PubKey).
+    to_eddsa_address(PubKey).
 
 %% @doc Generate a new wallet public and private key, with a corresponding keyfile.
 %% The provided key is used as part of the file name.
@@ -240,7 +240,7 @@ hash_address(PubKey) ->
 to_ecdsa_address(PubKey) ->
 	hb_keccak:key_to_ethereum_address(PubKey).
 
-arweave_ao_address(PubKey) ->
+to_eddsa_address(PubKey) ->
     Hash = crypto:hash(sha256, PubKey),
     base64:encode(Hash, #{padding => false, mode => urlsafe}).
 

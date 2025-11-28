@@ -771,13 +771,13 @@ eddsa_cases_test() ->
     ?assert(verify_item(BundleItem)),
     %% Missing Anchor should fail
     ?assertNot(verify_item(BundleItem#tx{anchor = <<>>})),
-    %% Tags
+    %% Missing Tags should fail
     ?assertNot(verify_item(BundleItem#tx{tags = []})),
-    %% Owner 
+    %% Missing Owner should fail
     ?assertNot(verify_item(BundleItem#tx{owner = crypto:strong_rand_bytes(32)})),
-    %% Target
+    %% Missing Target should fail
     ?assertNot(verify_item(BundleItem#tx{target = <<>>})),
-    %% Data
+    %% Missing Data should fail
     ?assertNot(verify_item(BundleItem#tx{data = <<>>})),
     ok.
 
