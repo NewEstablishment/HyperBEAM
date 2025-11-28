@@ -313,10 +313,8 @@ tx_to_json_struct(
         data_root = DataRoot,
         denomination = Denomination
     }) ->
-    hb_util:ok_or_throw(SigType,
-        lists:member(SigType, [?RSA_KEY_TYPE, ?EDDSA_KEY_TYPE]),
-        {invalid_signature_type, SigType}
-    ),
+    %% Only RSA supported for now
+    ?RSA_KEY_TYPE = SigType,
     Fields = [
         {<<"format">>,
             case Format of
