@@ -38,8 +38,8 @@ sign({{rsa, PublicExpnt}, Priv, Pub}, Data, DigestType) when PublicExpnt =:= 655
             privateExponent = binary:decode_unsigned(Priv)
         }
     );
-sign({KeyType = {KeyAlg, Curve}, Priv, _Pub}, Data, DigestType) when KeyType =:= {?EDDSA_SIGN_ALG, ed25519} ->
-    crypto:sign(KeyAlg, DigestType, Data, [Priv, Curve]);
+sign({KeyType = {KeyAlg, Curve}, Priv, _Pub}, Data, _DigestType) when KeyType =:= {?EDDSA_SIGN_ALG, ed25519} ->
+    crypto:sign(KeyAlg, none, Data, [Priv, Curve]);
 sign({{KeyType, Priv, Pub}, {KeyType, Pub}}, Data, DigestType) ->
     sign({KeyType, Priv, Pub}, Data, DigestType).
 
