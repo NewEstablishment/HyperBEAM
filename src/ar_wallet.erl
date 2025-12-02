@@ -89,7 +89,7 @@ to_address({{_, _, PubKey}, {_, PubKey}}, _) ->
 to_address(PubKey, {rsa, 65537}) ->
     to_rsa_address(PubKey);
 to_address(PubKey, {ecdsa, 256}) ->
-	to_ecdsa_address(PubKey);
+    to_ecdsa_address(PubKey);
 to_address(PubKey, {eddsa, ed25519}) -> 
     to_eddsa_address(PubKey).
 
@@ -241,8 +241,7 @@ to_ecdsa_address(PubKey) ->
 	hb_keccak:key_to_ethereum_address(PubKey).
 
 to_eddsa_address(PubKey) ->
-    Hash = crypto:hash(sha256, PubKey),
-    base64:encode(Hash, #{padding => false, mode => urlsafe}).
+    hash_address(PubKey).
 
 %%%===================================================================
 %%% Private functions.

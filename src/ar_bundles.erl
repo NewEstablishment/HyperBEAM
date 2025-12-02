@@ -1029,6 +1029,8 @@ deserialize_ed25519_transaction_test() ->
     % ans104-item-ed25519.bin is dataitem 1rTy7gQuK9lJydlKqCEhtGLp2WWG-GOrVo5JdiCmaxs
     {ok, Serialized} = file:read_file(<<"test/arbundles.js/ans104-item-ed25519.bin">>),
     Deserialized = deserialize(Serialized),
-    ?assertEqual({<<"Content-Type">>,<<"image/png">>}, Deserialized#tx.tags),
+    ?assertEqual([{<<"Content-Type">>,<<"image/png">>}], Deserialized#tx.tags),
     ?assertEqual(<<"ZbExyvGrJKOJTJcHMtKzoOZVCQBkjZ+5">>, Deserialized#tx.anchor),
+    ?assertEqual(<<"ejhYD9Cw9VCsVik6yGLoclo3CLRvAITHTZamLY_6ro4">>,
+        hb_util:human_id(ar_wallet:to_address(Deserialized#tx.owner, Deserialized#tx.signature_type))),
     ?assert(verify_item(Deserialized)).
