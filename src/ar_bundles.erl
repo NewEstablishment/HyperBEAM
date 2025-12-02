@@ -1024,3 +1024,10 @@ generate_and_write_map_bundle_test_disabled() ->
     ?assert(verify_item(Deserialized)),
     ok = file:write_file(
         <<"test/arbundles.js/ans104-map-bundle-erlang.bundle">>, Serialized).
+
+deserialize_ed25519_transaction_test() ->
+    {ok, Serialized} = file:read_file(<<"test/arbundles.js/ans104-item-ed25519.bin">>),
+    Deserialized = deserialize(Serialized),
+    ?assertEqual({<<"Content-Type">>,<<"image/png">>}, Deserialized#tx.tags),
+    ?assertEqual(<<"ZbExyvGrJKOJTJcHMtKzoOZVCQBkjZ+5">>, Deserialized#tx.anchor),
+    ?assert(verify_item(Deserialized)).
