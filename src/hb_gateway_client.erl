@@ -425,8 +425,7 @@ l1_transaction_test() ->
 %% @doc Test l2 message from graphql
 l2_dataitem_test() ->
     _Node = hb_http_server:start_node(#{}),
-    ID = <<"oyo3_hCczcU7uYhfByFZ3h0ELfeMMzNacT-KpRoJK6g">>,
-    {ok, Res} = read(ID, #{}),
+    {ok, Res} = read(ID = <<"oyo3_hCczcU7uYhfByFZ3h0ELfeMMzNacT-KpRoJK6g">>, #{}),
     ?event(gateway, {l2_dataitem, Res}),
     Opts = #{},
     CommitmentType = hb_util:deep_get(
