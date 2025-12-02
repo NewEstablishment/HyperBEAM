@@ -1026,6 +1026,7 @@ generate_and_write_map_bundle_test_disabled() ->
         <<"test/arbundles.js/ans104-map-bundle-erlang.bundle">>, Serialized).
 
 deserialize_ed25519_transaction_test() ->
+    % ans104-item-ed25519.bin is dataitem 1rTy7gQuK9lJydlKqCEhtGLp2WWG-GOrVo5JdiCmaxs
     {ok, Serialized} = file:read_file(<<"test/arbundles.js/ans104-item-ed25519.bin">>),
     Deserialized = deserialize(Serialized),
     ?assertEqual({<<"Content-Type">>,<<"image/png">>}, Deserialized#tx.tags),
