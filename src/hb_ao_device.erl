@@ -394,7 +394,7 @@ is_direct_key_access(Base, Req, Opts, MaybeStore) when ?IS_ID(Base) ->
         if MaybeStore =:= unknown -> hb_opts:get(store, no_viable_store, Opts);
         true -> MaybeStore
         end,
-    DevPath = hb_store:resolve(Store, [Base, <<"device">>]),
+    DevPath = [Base, <<"device">>],
     case hb_store:read(Store, DevPath) of
         {ok, Dev} ->
             do_is_direct_key_access(Dev, Req, Opts);

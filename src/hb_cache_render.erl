@@ -58,7 +58,7 @@ traverse_store(Store, Path, Parent, Graph, Opts) ->
         case hb_link:is_link_key(JoinedPath) of
             true ->
                 ?event({is_link_key, {path, Path}, {res_path, JoinedPath}}),
-                {ok, Link} = hb_store:read(Store, hb_store:resolve(Store, JoinedPath)),
+                {ok, Link} = hb_store:read(Store, JoinedPath),
                 ?event({resolved_link, {read, Link}}),
                 hb_store:resolve(Store, Link);
             false -> hb_store:resolve(Store, Path)
