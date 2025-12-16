@@ -198,6 +198,7 @@ data_item_signature_data(RawItem) ->
 
 get_signature_type({rsa, 65537}) -> <<"1">>;
 get_signature_type(ed25519) -> <<"2">>;
+get_signature_type({ecdsa, 256}) -> <<"3">>;
 get_signature_type(solana) -> <<"4">>;
 get_signature_type(injected_aptos) -> <<"5">>.
 
