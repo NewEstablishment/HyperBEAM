@@ -478,10 +478,10 @@ verifiability_test() ->
     ?event({verifying, {structured, Structured}, {original, Message}}),
     ?assert(hb_message:verify(Structured)).
 
-%% @doc Reading an unsupported transaction should fail
+%% @doc Reading an unsupported signature type transaction should fail
 failure_to_process_message_test() ->
     hb_http_server:start_node(#{}),
-    failure =
+    ?assertEqual(failure,
         hb_cache:read(
             <<"j0_mJMXG2YO4oRcOtjYsNoUJbN2TaKLo4nTtbhKqnEU">>,
             #{
@@ -492,7 +492,8 @@ failure_to_process_message_test() ->
                         }
                     ]
             }
-        ).
+        )
+    ).
 
 %% @doc Test that another HyperBEAM node offering the `~query@1.0' device can
 %% be used as a store.
