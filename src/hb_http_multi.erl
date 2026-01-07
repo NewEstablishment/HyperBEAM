@@ -21,6 +21,8 @@
 -module(hb_http_multi).
 -export([request/5]).
 -include("include/hb.hrl").
+%% Max waiting time for a parallel request to arrive
+-define(DEFAULT_PARALLEL_TIMEOUT, 10000).
 
 %% @doc Dispatch the same HTTP request to many nodes. Can be configured to
 %% await responses from all nodes or just one, and to halt all requests after
@@ -241,6 +243,9 @@ admissible_response(Response, Msg, Opts) ->
 
 %% @doc Collect the necessary number of responses, and stop workers if
 %% configured to do so.
+parallel_responses(Res, [], Ref, _Awaiting, _StopAfter, _Admissible, _Statuses, _Opts) ->
+    empty_inbox(Ref),
+    Res;
 parallel_responses(Res, Procs, Ref, 0, false, _Admissible, _Statuses, _Opts) ->
     lists:foreach(fun(P) -> P ! no_reply end, Procs),
     empty_inbox(Ref),
@@ -263,20 +268,23 @@ parallel_responses(Res, Procs, Ref, Awaiting, StopAfter, Admissible, Statuses, O
                         Admissible,
                         Statuses,
                         Opts
-                );
-            false ->
-                parallel_responses(
-                    Res,
-                    lists:delete(Pid, Procs),
-                    Ref,
-                    Awaiting,
-                    StopAfter,
-                    Admissible,
-                    Statuses,
-                    Opts
-                )
-        end
-end.
+                    );
+                false ->
+                    parallel_responses(
+                        Res,
+                        lists:delete(Pid, Procs),
+                        Ref,
+                        Awaiting,
+                        StopAfter,
+                        Admissible,
+                        Statuses,
+                        Opts
+                    )
+            end
+    after ?DEFAULT_PARALLEL_TIMEOUT ->
+        empty_inbox(Ref),
+        Res
+    end.
 
 %% @doc Empty the inbox of the current process for all messages with the given
 %% reference.
