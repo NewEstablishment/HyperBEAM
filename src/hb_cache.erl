@@ -107,7 +107,9 @@ ensure_loaded(Ref,
                     Next
             end;
         not_found ->
-            report_ensure_loaded_not_found(Ref, Lk, Opts)
+            report_ensure_loaded_not_found(Ref, Lk, Opts);
+        failure ->
+            failure
     end;
 ensure_loaded(Ref, Link = {link, ID, LinkOpts = #{ <<"lazy">> := true }}, RawOpts) ->
     % If the user provided their own options, we merge them and _overwrite_
