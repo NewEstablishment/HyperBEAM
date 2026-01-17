@@ -414,6 +414,37 @@ to_message(Path, {ok, #{ <<"body">> := Body }}, Opts) ->
 
 %%% Tests
 
+start_mock_gateway(ChunkData) ->
+    Endpoints = [
+        {"/chunk/:offset", chunk,
+            fun(Req) ->
+                Path = maps:get(<<"path">>, Req, <<>>),
+                Segments = binary:split(Path, <<"/">>, [global, trim_all]),
+                OffsetValue = hb_util:int(lists:last(Segments)),
+                case maps:get(OffsetValue, ChunkData, undefined) of
+                    undefined ->
+                        {404, <<"not found">>};
+                    Data ->
+                        Body = hb_json:encode(#{ <<"chunk">> => hb_util:encode(Data) }),
+                        {200, Body}
+                end
+            end}
+    ],
+    {ok, MockServer, ServerHandle} = hb_mock_server:start(Endpoints),
+    Opts = #{
+        routes => [
+            #{
+                <<"template">> => <<"/arweave">>,
+                <<"node">> => #{
+                    <<"match">> => <<"^/arweave">>,
+                    <<"with">> => MockServer,
+                    <<"opts">> => #{ http_client => httpc, protocol => http2 }
+                }
+            }
+        ]
+    },
+    {ServerHandle, Opts}.
+
 post_ans104_tx_test() ->
     ServerOpts = #{ store => [hb_test_utils:test_store()] },
     Server = hb_http_server:start_node(ServerOpts),
