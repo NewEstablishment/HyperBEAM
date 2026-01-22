@@ -103,6 +103,7 @@ httpc_req(Args, Opts) ->
                     HeaderKV
                 };
             _ ->
+                upload_metric(Body),
                 {
                     URL,
                     HeaderKV,
@@ -115,6 +116,7 @@ httpc_req(Args, Opts) ->
 	StartTime = os:system_time(native),
     case httpc:request(Method, Request, [], HTTPCOpts) of
         {ok, {{_, Status, _}, RawRespHeaders, RespBody}} ->
+            download_metric(RespBody),
 	        EndTime = os:system_time(native),
             RespHeaders =
                 [
@@ -747,6 +749,18 @@ download_metric(Data) ->
 		byte_size(Data)
 	).
 
+upload_metric(Body) when is_binary(Body) ->
+	inc_prometheus_counter(
+		http_client_uploaded_bytes_total,
+		[],
+		byte_size(Body)
+	);
+upload_metric(#{method := <<"POST">>, body := Body}) ->
+	inc_prometheus_counter(
+		http_client_uploaded_bytes_total,
+		[],
+		byte_size(Body)
+	);
 upload_metric(#{method := post, body := Body}) ->
 	inc_prometheus_counter(
 		http_client_uploaded_bytes_total,

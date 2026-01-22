@@ -105,7 +105,13 @@ request(Method, Peer, Path, RawMessage, Opts) ->
         ),
     StartTime = os:system_time(millisecond),
     % Perform the HTTP request.
-    {_ErlStatus, Status, Headers, Body} = hb_http_client:request(Req, Opts),
+    {ErlStatus, Status, Headers, Body} = 
+        case hb_http_client:request(Req, Opts) of 
+            {error, ErrorDetails} ->
+                {error, 499, [], ErrorDetails};
+            Response -> 
+                Response
+        end,
     % Process the response.
     EndTime = os:system_time(millisecond),
     ?event(http_outbound,
@@ -122,98 +128,103 @@ request(Method, Peer, Path, RawMessage, Opts) ->
         },
         Opts
     ),
-    % Convert the set-cookie headers into a cookie message, if they are present.
-    % We do this by extracting the set-cookie headers and converting them into a
-    % cookie message if they are present.
-    SetCookieLines =
-        [
-            KeyVal
-        ||
-            {<<"set-cookie">>, KeyVal} <- Headers
-        ],
-    MaybeSetCookie =
-        case SetCookieLines of
-            [] -> #{};
-            _ ->
-                ?event(
-                    debug_cookie,
-                    {normalizing_setcookie_headers,
-                        {set_cookie_lines, [ {string, Line} || Line <- SetCookieLines ]}
-                    },
-                    Opts
-                ),
-                {ok, MsgWithCookies} =
-                    dev_codec_cookie:from(
-                        #{ <<"set-cookie">> => SetCookieLines },
-                        #{},
-                        Opts
-                    ),
-                ?event(debug_cookie, {msg_with_cookies, MsgWithCookies}),
-                MsgWithCookies
-        end,
-    % Merge the set-cookie message into the header map, which itself is
-    % constructed from the header key-value pair list.
-    HeaderMap = hb_maps:merge(hb_maps:from_list(Headers), MaybeSetCookie, Opts),
-    NormHeaderMap = hb_ao:normalize_keys(HeaderMap, Opts),
-    ?event(http_outbound,
-        {normalized_response_headers, {norm_header_map, NormHeaderMap}},
-        Opts
-    ),
-    ?event(http_short,
-        {received,
-            {status, Status},
-            {duration, EndTime - StartTime},
-            {method, Method},
-            {peer, Peer},
-            {path, {string, Path}},
-            {body_size, byte_size(Body)}
-        }),
-    ReturnAOResult =
-        hb_opts:get(http_only_result, true, Opts) andalso
-        hb_maps:get(<<"ao-result">>, NormHeaderMap, false, Opts),
-    case ReturnAOResult of
-        Key when is_binary(Key) ->
-            Msg = http_response_to_httpsig(Status, NormHeaderMap, Body, Opts),
-            ?event(
-                http_outbound,
-                {result_is_single_key, {key, Key}, {msg, Msg}},
+    case ErlStatus of 
+        error -> 
+            {error, Body};
+        ok -> 
+            % Convert the set-cookie headers into a cookie message, if they are present.
+            % We do this by extracting the set-cookie headers and converting them into a
+            % cookie message if they are present.
+            SetCookieLines =
+                [
+                    KeyVal
+                ||
+                    {<<"set-cookie">>, KeyVal} <- Headers
+                ],
+            MaybeSetCookie =
+                case SetCookieLines of
+                    [] -> #{};
+                    _ ->
+                        ?event(
+                            debug_cookie,
+                            {normalizing_setcookie_headers,
+                                {set_cookie_lines, [ {string, Line} || Line <- SetCookieLines ]}
+                            },
+                            Opts
+                        ),
+                        {ok, MsgWithCookies} =
+                            dev_codec_cookie:from(
+                                #{ <<"set-cookie">> => SetCookieLines },
+                                #{},
+                                Opts
+                            ),
+                        ?event(debug_cookie, {msg_with_cookies, MsgWithCookies}),
+                        MsgWithCookies
+                end,
+            % Merge the set-cookie message into the header map, which itself is
+            % constructed from the header key-value pair list.
+            HeaderMap = hb_maps:merge(hb_maps:from_list(Headers), MaybeSetCookie, Opts),
+            NormHeaderMap = hb_ao:normalize_keys(HeaderMap, Opts),
+            ?event(http_outbound,
+                {normalized_response_headers, {norm_header_map, NormHeaderMap}},
                 Opts
             ),
-            case {Key, hb_maps:get(Key, Msg, undefined, Opts)} of
-                {<<"body">>, undefined} ->
-                    {response_status_to_atom(Status), <<>>};
-                {_, undefined} ->
-                    {failure,
-                        <<
-                            "Result key '",
-                            Key/binary,
-                            "' not found in response from '",
-                            Peer/binary,
-                            "' for path '",
-                            Path/binary,
-                            "': ",
-                            Body/binary
-                        >>
-                    };
-                {_, Value} ->
-                    {response_status_to_atom(Status), Value}
-            end;
-        false ->
-            % Find the codec device from the headers, if set.
-            CodecDev =
-                hb_maps:get(
-                    <<"codec-device">>,
-                    NormHeaderMap,
-                    <<"httpsig@1.0">>,
-                    Opts
-                ),
-            outbound_result_to_message(
-                CodecDev,
-                Status,
-                NormHeaderMap,
-                Body,
-                Opts
-            )
+            ?event(http_short,
+                {received,
+                    {status, Status},
+                    {duration, EndTime - StartTime},
+                    {method, Method},
+                    {peer, Peer},
+                    {path, {string, Path}},
+                    {body_size, byte_size(Body)}
+                }),
+            ReturnAOResult =
+                hb_opts:get(http_only_result, true, Opts) andalso
+                hb_maps:get(<<"ao-result">>, NormHeaderMap, false, Opts),
+            case ReturnAOResult of
+                Key when is_binary(Key) ->
+                    Msg = http_response_to_httpsig(Status, NormHeaderMap, Body, Opts),
+                    ?event(
+                        http_outbound,
+                        {result_is_single_key, {key, Key}, {msg, Msg}},
+                        Opts
+                    ),
+                    case {Key, hb_maps:get(Key, Msg, undefined, Opts)} of
+                        {<<"body">>, undefined} ->
+                            {response_status_to_atom(Status), <<>>};
+                        {_, undefined} ->
+                            {failure,
+                                <<
+                                    "Result key '",
+                                    Key/binary,
+                                    "' not found in response from '",
+                                    Peer/binary,
+                                    "' for path '",
+                                    Path/binary,
+                                    "': ",
+                                    Body/binary
+                                >>
+                            };
+                        {_, Value} ->
+                            {response_status_to_atom(Status), Value}
+                    end;
+                false ->
+                    % Find the codec device from the headers, if set.
+                    CodecDev =
+                        hb_maps:get(
+                            <<"codec-device">>,
+                            NormHeaderMap,
+                            <<"httpsig@1.0">>,
+                            Opts
+                        ),
+                    outbound_result_to_message(
+                        CodecDev,
+                        Status,
+                        NormHeaderMap,
+                        Body,
+                        Opts
+                    )
+            end
     end.
 
 %% @doc Convert a HTTP status code to a status atom.
@@ -1137,9 +1148,6 @@ prometheus_init() ->
 			"The total duration of an hb_http_server request call." 
 		}
 	]).
-
-
-
 
 %%% Tests
 
