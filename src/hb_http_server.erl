@@ -295,9 +295,10 @@ start_http2(ServerID, ProtoOpts, NodeMsg) ->
     ?event(http, {start_http2, ServerID}),
     StartRes = cowboy:start_clear(
         ServerID,
-        [
-            {port, Port = hb_opts:get(port, 8734, NodeMsg)}
-        ],
+        #{
+            socket_opts => [{port, Port = hb_opts:get(port, 8734, NodeMsg)}],
+            max_connections => 10000
+         },
         ProtoOpts
     ),
     case StartRes of
