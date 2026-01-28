@@ -228,38 +228,52 @@ generate_binary_path(Bin, Opts) ->
 %% the commitments of the inner messages. We do not, however, store the IDs from
 %% commitments on signed _inner_ messages. We may wish to revisit this.
 write(RawMsg, Opts) when is_map(RawMsg) ->
-    hb_message:paranoid_verify(cache_write, RawMsg, Opts),
-    {ok, Msg} = hb_message:with_only_committed(RawMsg, Opts),
-    TABM = hb_message:convert(Msg, tabm, <<"structured@1.0">>, Opts),
-    ?event(debug_cache, {writing_full_message, {msg, TABM}}),
-    try
-        do_write_message(
-            TABM,
-            hb_opts:get(store, no_viable_store, Opts),
-            Opts
-        )
-    catch
-        Type:Reason:Stacktrace ->
-            ?event(error,
-                {cache_write_error,
-                    {type, Type},
-                    {reason, Reason},
-                    {stacktrace, {trace, Stacktrace}}
-                },
-                Opts
-            ),
-            erlang:raise(Type, Reason, Stacktrace)
+    ScopedOpts = hb_store:scope(Opts, local),
+    case hb_opts:get(store, no_viable_store, ScopedOpts) of
+        no_viable_store -> {error, no_viable_store};
+        [] -> {error, no_viable_store};
+        _Store ->
+            hb_message:paranoid_verify(cache_write, RawMsg, ScopedOpts),
+            {ok, Msg} = hb_message:with_only_committed(RawMsg, ScopedOpts),
+            TABM = hb_message:convert(Msg, tabm, <<"structured@1.0">>, ScopedOpts),
+            ?event(debug_cache, {writing_full_message, {msg, TABM}}),
+            try
+                {Duration, Result} = timer:tc(fun () ->
+                do_write_message(
+                    TABM,
+                    hb_opts:get(store, no_viable_store, ScopedOpts),
+                    ScopedOpts
+                ) end, native),
+                UncommittedID = hb_message:id(Msg, none, ScopedOpts#{ linkify_mode => discard }),
+                record_duration(Duration),
+                ?event(metrics_short, {write_message, {uncommitted_id, UncommittedID}, {duration, erlang:convert_time_unit(Duration, native, millisecond)}}),
+                Result
+            catch
+                Type:Reason:Stacktrace ->
+                    ?event(error,
+                        {cache_write_error,
+                            {type, Type},
+                            {reason, Reason},
+                            {stacktrace, {trace, Stacktrace}}
+                        },
+                        ScopedOpts
+                    ),
+                    erlang:raise(Type, Reason, Stacktrace)
+            end
     end;
 write(List, Opts) when is_list(List) ->
     write(hb_message:convert(List, tabm, <<"structured@1.0">>, Opts), Opts);
 write(Bin, Opts) when is_binary(Bin) ->
-    do_write_message(Bin, hb_opts:get(store, no_viable_store, Opts), Opts).
+    ScopedOpts = hb_store:scope(Opts, local),
+    case hb_opts:get(store, no_viable_store, ScopedOpts) of
+        no_viable_store -> {error, no_viable_store};
+        [] -> {error, no_viable_store};
+        _Store ->
+            do_write_message(Bin, hb_opts:get(store, no_viable_store, ScopedOpts), ScopedOpts)
+    end.
 
 do_write_message(Bin, Store, Opts) when is_binary(Bin) ->
-    % Write the binary in the store at its calculated content-hash.
-    % Return the path.
-    ok = hb_store:write(Store, Path = generate_binary_path(Bin, Opts), Bin),
-    %lists:map(fun(ID) -> hb_store:make_link(Store, Path, ID) end, AllIDs),
+    ok = hb_store:write_all(Store, Path = generate_binary_path(Bin, Opts), Bin),
     {ok, Path};
 do_write_message(List, Store, Opts) when is_list(List) ->
     do_write_message(
@@ -274,16 +288,13 @@ do_write_message(Msg, Store, Opts) when is_map(Msg) ->
     AltIDs = calculate_all_ids(Msg, Opts) -- [UncommittedID],
     MsgHashpathAlg = hb_path:hashpath_alg(Msg, Opts),
     ?event(debug_cache, {writing_message, {id, UncommittedID}, {alt_ids, AltIDs}, {original, Msg}}),
-    % Write all of the keys of the message into the store.
-    hb_store:make_group(Store, UncommittedID),
+    hb_store:make_group_all(Store, UncommittedID),
     maps:map(
         fun(Key, Value) ->
             write_key(UncommittedID, Key, MsgHashpathAlg, Value, Store, Opts)
         end,
         maps:without([<<"priv">>], Msg)
     ),
-    % Write the commitments to the store, linking each commitment ID to the
-    % uncommitted message.
     lists:map(
         fun(AltID) ->
             ?event(debug_cache,
@@ -291,20 +302,16 @@ do_write_message(Msg, Store, Opts) when is_map(Msg) ->
                     {uncommitted_id, UncommittedID},
                     {committed_id, AltID}
             }),
-            hb_store:make_link(Store, UncommittedID, AltID)
+            hb_store:make_link_all(Store, UncommittedID, AltID)
         end,
         AltIDs
     ),
     {ok, UncommittedID}.
 
-%% @doc Write a single key for a message into the store.
 write_key(Base, <<"commitments">>, _HPAlg, RawCommitments, Store, Opts) ->
-    % The commitments are a special case: We calculate the single-part hashpath
-    % for the `baseID/commitments` key, then write each commitment to the store
-    % and link it to `baseCommHP/commitmentID`.
     Commitments = prepare_commitments(RawCommitments, Opts),
     CommitmentsBase = commitment_path(Base, Opts),
-    ok = hb_store:make_group(Store, CommitmentsBase),
+    ok = hb_store:make_group_all(Store, CommitmentsBase),
     ?event(
         {writing_commitments,
             {base, Base},
@@ -316,7 +323,7 @@ write_key(Base, <<"commitments">>, _HPAlg, RawCommitments, Store, Opts) ->
         fun(BaseCommID, Commitment) ->
             ?event(debug_cache, {writing_commitment, {commitment, Commitment}}),
             {ok, CommMsgID} = do_write_message(Commitment, Store, Opts),
-            hb_store:make_link(
+            hb_store:make_link_all(
                 Store,
                 CommMsgID,
                 << CommitmentsBase/binary, "/", BaseCommID/binary >>
@@ -324,8 +331,7 @@ write_key(Base, <<"commitments">>, _HPAlg, RawCommitments, Store, Opts) ->
         end,
         Commitments
     ),
-    % Link the commitments base to `base/commitments`.
-    hb_store:make_link(Store, CommitmentsBase, <<Base/binary, "/commitments">>);
+    hb_store:make_link_all(Store, CommitmentsBase, <<Base/binary, "/commitments">>);
 write_key(Base, Key, HPAlg, Value, Store, Opts) ->
     KeyHashPath =
         hb_path:hashpath(
@@ -335,7 +341,7 @@ write_key(Base, Key, HPAlg, Value, Store, Opts) ->
             Opts
         ),
     {ok, Path} = do_write_message(Value, Store, Opts),
-    hb_store:make_link(Store, Path, KeyHashPath),
+    hb_store:make_link_all(Store, Path, KeyHashPath),
     {ok, Path}.
 
 %% @doc The `structured@1.0` encoder does not typically encode `commitments`,
