@@ -14,7 +14,11 @@
 -define(DEFAULT_FILTER_KEYS, [<<"content-length">>]).
 
 start() ->
-    httpc:set_options([{max_keep_alive_length, 0}]),
+    prometheus_init(),
+    httpc:set_options([
+        {max_keep_alive_length, 0},
+        {max_sessions, 100}
+    ]),
     ok.
 
 %% @doc Gets a URL via HTTP and returns the resulting message in deserialized

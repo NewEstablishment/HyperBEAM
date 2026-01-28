@@ -16,7 +16,7 @@
 %%% - A cache statistics table containing all the information about the cache
 %%%   size, capacity, and indexing.
 -module(hb_store_lru).
--export([start/1, stop/1, reset/1, scope/1]).
+-export([start/1, stop/1, reset/1, scope/1, stats/1]).
 -export([write/3, read/2, read_with_type/2, list/2, type/2, make_link/3, make_group/2, resolve/2]).
 -include_lib("eunit/include/eunit.hrl").
 -include("include/hb.hrl").
@@ -97,6 +97,17 @@ reset(Opts) ->
             end
     end.
 
+stats(Opts) ->
+    #{ <<"pid">> := Server, <<"cache-table">> := CacheTable } = hb_store:find(Opts),
+    Server ! {stats, self(), Ref = make_ref()},
+    receive
+        {stats, Ref, Bytes} ->
+            Elements = ets:info(CacheTable, size),
+            #{bytes => Bytes, elements => Elements}
+    after 1000 ->
+        {error, timeout}
+    end.
+
 server_loop(State =
                 #{cache_table := CacheTable,
                   stats_table := StatsTable,
@@ -105,6 +116,9 @@ server_loop(State =
     receive
         {sync, From} ->
             From ! {ok, self()},
+            server_loop(State, Opts);
+        {stats, From, Ref} ->
+            From ! {stats, Ref, cache_size(State)},
             server_loop(State, Opts);
         {get_cache_table, From} ->
             From ! CacheTable;
