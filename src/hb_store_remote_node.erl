@@ -6,7 +6,7 @@
 -module(hb_store_remote_node).
 -export([scope/1, type/2, read/2, write/3, make_link/3, resolve/2]).
 %%% Public utilities.
--export([maybe_cache/2, maybe_cache/3, read_local_cache/2]).
+-export([maybe_cache/2, maybe_cache/3, maybe_cache_async/2, maybe_cache_async/3, read_local_cache/2]).
 -include("include/hb.hrl").
 -include_lib("eunit/include/eunit.hrl").
 
@@ -47,13 +47,19 @@ type(Opts = #{ <<"node">> := Node }, Key) ->
 %% @doc Read a key from the remote node.
 %%
 %% Makes an HTTP GET request to the remote node and returns the
-%% committed message.
+%% committed message. Uses singleflight to deduplicate concurrent requests
+%% for the same key.
 %%
 %% @param Opts A map of options (including node configuration).
 %% @param Key The key to read.
-%% @returns {ok, Msg} on success or not_found if the key is missing.
+%% @returns {ok, Msg} on success, not_found if the key is missing,
+%% or {error, timeout} if the request times out.
 read(Opts = #{ <<"node">> := Node }, Key) ->
     ?event(store_remote_node, {executing_read, {node, Node}, {key, Key}}),
+    SFKey = {remote_node_read, Key, Node},
+    hb_singleflight:do(SFKey, fun() -> fetch_from_remote(Opts, Key) end).
+
+fetch_from_remote(Opts = #{ <<"node">> := Node }, Key) ->
     HTTPRes =
         hb_http:get(
             Node,
@@ -62,10 +68,9 @@ read(Opts = #{ <<"node">> := Node }, Key) ->
         ),
     case HTTPRes of
         {ok, Res} ->
-            % returning the whole response to get the test-key
             {ok, Msg} = hb_message:with_only_committed(Res, Opts),
             ?event(store_remote_node, {read_found, {result, Msg, response, Res}}),
-            maybe_cache(Opts, Msg, [Key]),
+            maybe_cache_async(Opts, Msg, [Key]),
             {ok, Msg};
         {error, _Err} ->
             ?event(store_remote_node, {read_not_found, {key, Key}}),
@@ -120,6 +125,101 @@ maybe_cache(StoreOpts, Data, Links) ->
         ignored
     end.
 
+maybe_cache_async(StoreOpts, Message) ->
+    maybe_cache_async(StoreOpts, Message, []).
+
+maybe_cache_async(StoreOpts, Message, Links) ->
+    spawn(?MODULE, maybe_cache, [StoreOpts, Message, Links]),
+    ok.
+
+should_write(Message, #{<<"store-module">> := StoreModule} = Store) ->
+    %% Max file size parameters is inclusive. If the message size match
+    %% the max file size value, it will be written to disk.
+    MaxFileSize = maps:get(<<"max-file-size">>, Store, 0),
+    %% Min file size is exclusive, if 5_000_000 is defined,
+    %% only value above 5_000_000 will be stored.
+    MinFileSize = maps:get(<<"min-file-size">>, Store, 0),
+    MessageByteSize = get_message_byte_size(Message),
+    ?event(debug,
+        {skip_store_write,
+            {id, hb_message:id(Message, signed, #{})},
+            {message_byte_size, MessageByteSize},
+            {store_module, StoreModule},
+            {max_file_size, MaxFileSize},
+            {min_file_size, MinFileSize}}),
+    case MinFileSize > MaxFileSize of 
+        true ->
+            ?event(warning, 
+                {min_file_size_above_max_file_size,
+                    {min_file_size, MinFileSize},
+                    {max_file_size, MaxFileSize}
+                }
+            );
+        false ->
+            no_op
+    end,
+    (MaxFileSize == 0 orelse MessageByteSize =< MaxFileSize)
+        andalso (MinFileSize == 0 orelse MessageByteSize > MinFileSize).
+
+get_message_byte_size(Message) when is_atom(Message) orelse is_integer(Message) -> 
+    0;
+get_message_byte_size(Message) when is_binary(Message) -> 
+    byte_size(Message);
+get_message_byte_size(Message) when is_map(Message) -> 
+    lists:foldl(
+        fun(Key, ByteSize) -> 
+            ByteSize + get_message_byte_size(maps:get(Key, Message)) 
+        end, 
+        0, 
+        maps:keys(Message)
+     );
+get_message_byte_size(Message) when is_list(Message) -> 
+    lists:foldl(
+        fun(Item, ByteSize) -> 
+            ByteSize + get_message_byte_size(Item)
+        end, 
+        0, 
+        Message
+     ).
+
+maybe_cache_by_store(#{<<"store-module">> := StoreModule} = Store, Data, Links) ->
+    case should_write(Data, Store) of
+        true ->
+            case hb_cache:write(Data, #{ store => Store }) of
+                {ok, RootPath} ->
+                    % Remove the base path from the links.
+                    LinksWithoutRootPath =
+                        lists:filter(
+                            fun(Link) -> Link /= RootPath end,
+                            Links
+                        ),
+                    ?event(store_remote_node, cached_received),
+                    LinkResults =
+                        lists:filter(
+                            fun(Link) ->
+                                hb_store:make_link(Store, RootPath, Link) == false
+                            end,
+                            LinksWithoutRootPath
+                        ),
+                    ?event(store_remote_node,
+                        {linked_cached,
+                            {failed_links, LinkResults}
+                        }
+                    ),
+                    case LinkResults of
+                        [] -> ok;
+                        _ -> {failed_links, LinkResults}
+                    end;
+                {error, Err} ->
+                    ?event(store_remote_node, error_on_local_cache_write),
+                    ?event(warning, {error_caching_remote_node_data, Err}),
+                    {error, Err}
+            end;
+
+        false ->
+            ?event({skipped_store_write, {store_module, StoreModule}}),
+            ok
+    end.
 %% @doc Read local store cached value.
 read_local_cache(StoreOpts, ID) ->
     ?event({read_local_cache, StoreOpts, ID}),
@@ -223,3 +323,48 @@ read_test() ->
 	],
     {ok, RetrievedMsg} = hb_cache:read(ID, #{ store => RemoteStore }),
     ?assertMatch(#{ <<"test-key">> := Rand }, hb_cache:ensure_all_loaded(RetrievedMsg)).
+
+timeout_propagation_test() ->
+    ok = meck:new(hb_singleflight, [passthrough]),
+    try
+        ok = meck:expect(hb_singleflight, do, fun(_, _) -> {error, timeout} end),
+        Opts = #{ <<"node">> => <<"http://example.com">> },
+        ?assertEqual({error, timeout}, hb_store_remote_node:read(Opts, <<"key">>))
+    after
+        ok = meck:unload(hb_singleflight)
+    end.
+
+should_write_test() ->
+    Store = #{
+		<<"store-module">> => hb_store_lmdb,
+		<<"name">> => <<"cache-mainnet/lmdb">>
+	},
+    Value5Bytes = <<1,2,3,4,5>>,
+    ?assert(
+       should_write(Value5Bytes, Store), 
+       "Nothing defined should always write"
+    ),
+    ?assertNot(
+       should_write(Value5Bytes, Store#{<<"max-file-size">> => 3}), 
+       "Max file size set, Message size ABOVE max file size should not be written"
+    ),
+    ?assert(
+       should_write(Value5Bytes, Store#{<<"max-file-size">> => 5}), 
+       "Max file size set, Message size BELLOW OR EQUAL to max file size should be written"
+    ),
+    ?assert(
+       should_write(Value5Bytes, Store#{<<"min-file-size">> => 3}), 
+       "Min file size set, Message size ABOVE min file size should be written"
+    ),
+    ?assertNot(
+       should_write(Value5Bytes, Store#{<<"min-file-size">> => 5}), 
+       "Min file size set, Message size BELLOW OR EQUAL to min file size should not be written"
+    ),
+    ?assert(
+       should_write(Value5Bytes, Store#{<<"min-file-size">> => 3, <<"max-file-size">> => 10}), 
+       "Max and min file size set, Message size between these values"
+    ),
+    ?assertNot(
+       should_write(Value5Bytes, Store#{<<"min-file-size">> => 7, <<"max-file-size">> => 3}), 
+       "Max and min file size set, Message outside these values"
+    ).
