@@ -440,7 +440,7 @@ test_stores() ->
                 }
             ]
         }
-    ] ++ rocks_stores().
+    ] ++ rocks_stores() ++ s3_stores().
 
 -ifdef(ENABLE_ROCKSDB).
 rocks_stores() ->
@@ -453,16 +453,26 @@ rocks_stores() ->
 -else.
 rocks_stores() -> [].
 -endif.
-
+-ifdef(ENABLE_S3).
+s3_stores() ->
+    [(hb_store_s3:default_test_opts())#{
+        <<"benchmark-scale">> => 0.01
+    }].
+-else.
+s3_stores() -> [].
+-endif.
 generate_test_suite(Suite) ->
     generate_test_suite(Suite, test_stores()).
 generate_test_suite(Suite, Stores) ->
     hb:init(),
+    application:ensure_all_started(hb),
     lists:map(
         fun(Store = #{<<"store-module">> := Mod}) ->
             {foreach,
                 fun() ->
-                    hb_store:start(Store)
+                    hb_store:start(Store),
+                    % If the test fails, the store isn't cleared.
+                    hb_store:reset(Store)
                 end,
                 fun(_) ->
                     hb_store:reset(Store)

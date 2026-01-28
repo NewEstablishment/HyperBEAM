@@ -87,6 +87,7 @@ HyperBEAM supports several optional build profiles that enable additional featur
 
 - `genesis_wasm`: Enables Genesis WebAssembly support
 - `rocksdb`: Enables RocksDB storage backend (adds RocksDB v1.8.0 dependency)
+- `s3`: Enables S3 storage backend
 - `http3`: Enables HTTP/3 support via QUIC protocol
 
 
