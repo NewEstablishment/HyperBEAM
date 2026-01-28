@@ -133,9 +133,8 @@ server_loop(State =
             ?event(debug_lru, {make_group, Key}),
             ensure_dir(State, Key),
             From ! {ok, Ref};
-        {update_recent, Key, Entry, From, Ref} ->
-            update_recently_used(State, Key, Entry),
-            From ! {ok, Ref};
+        {update_recent, Key, Entry} ->
+            update_recently_used(State, Key, Entry);
         {reset, From, Ref} ->
             ets:delete_all_objects(CacheTable),
             ets:delete_all_objects(StatsTable),
@@ -197,10 +196,10 @@ read(Opts, RawKey) ->
                     end
             end;
         {raw, Entry = #{value := Value}} ->
-            Server ! {update_recent, Key, Entry, self(), Ref = make_ref()},
-            receive
-                {ok, Ref} -> {ok, Value}
-            end;
+            % Async recency update (fire-and-forget) for throughput. Trades strict
+            % LRU ordering for reduced contention under high concurrency.
+            Server ! {update_recent, Key, Entry},
+            {ok, Value};
         {link, Link} ->
             ?event({link_found, RawKey, Link}),
             read(Opts, Link);
@@ -380,10 +379,8 @@ read_with_type(Opts, RawKey) ->
                     end
             end;
         {raw, Entry = #{value := Value}} ->
-            Server ! {update_recent, Key, Entry, self(), Ref = make_ref()},
-            receive
-                {ok, Ref} -> {simple, Value}
-            end;
+            Server ! {update_recent, Key, Entry},
+            {simple, Value};
         {link, Link} ->
             read_with_type(Opts, Link);
         {group, _Set} ->
