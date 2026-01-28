@@ -166,15 +166,21 @@ read(Opts, RawKey) ->
                 no_store ->
                     not_found;
                 PersistentStore ->
-                    % FIXME: It might happens some links can be in LRU while data on 
-                    % the permanent store and resolve doesn't produce the same key.
-                    ResolvedKey = case RawKey == Key of
-                      true ->
-                        hb_store:resolve(PersistentStore, RawKey);
-                      false ->
-                        Key
+                    JoinedRawKey = hb_store:join(RawKey),
+                    StoreToUse = case Key == JoinedRawKey of
+                        true -> PersistentStore;
+                        false -> add_skip_resolve(PersistentStore)
                     end,
-                    hb_store:read(PersistentStore, ResolvedKey)
+                    case hb_store:read(StoreToUse, Key) of
+                        {ok, Value} ->
+                            hb_trace:span(<<"lru:write_back">>, fun() ->
+                                Server ! {put, Key, Value, self(), Ref = make_ref()},
+                                receive {ok, Ref} -> ok end
+                            end),
+                            {ok, Value};
+                        Other ->
+                            Other
+                    end
             end;
         {raw, Entry = #{value := Value}} ->
             Server ! {update_recent, Key, Entry, self(), Ref = make_ref()},
@@ -237,12 +243,23 @@ make_link(Opts, RawExisting, New) ->
 
 %% @doc List all the keys registered.
 list(Opts, Path) ->
+    ResolvedPath = resolve(Opts, Path),
     PersistentKeys =
         case get_persistent_store(Opts) of
             no_store ->
                 not_found;
             Store ->
-                case hb_store_common:resolved_list(Store, Path) of
+                JoinedPath = hb_store:join(Path),
+                UseStoreResolve = ResolvedPath == JoinedPath,
+                StoreToUse = case UseStoreResolve of
+                    true -> Store;
+                    false -> add_skip_resolve(Store)
+                end,
+                ResolvedForStore = case UseStoreResolve of
+                    true -> hb_store:resolve(Store, Path);
+                    false -> ResolvedPath
+                end,
+                case hb_store:list(StoreToUse, ResolvedForStore) of
                     {ok, Keys} -> Keys;
                     not_found -> not_found
                 end
@@ -300,19 +317,52 @@ type(Opts, Key) ->
 read_with_type(Opts, RawKey) ->
     #{ <<"pid">> := Server } = hb_store:find(Opts),
     Key = resolve(Opts, RawKey),
-    case fetch_cache_with_retry(Opts, Key) of
+    LookupResult = hb_trace:span(<<"lru:lookup">>, fun() -> fetch_cache_with_retry(Opts, Key) end),
+    ResultType = case LookupResult of
+        nil -> nil;
+        {T, _} -> T;
+        OtherResult -> OtherResult
+    end,
+    ?event(debug_lru, {lookup_result, {key, Key}, {result_type, ResultType}}),
+    case LookupResult of
         nil ->
             case get_persistent_store(Opts) of
                 no_store ->
                     not_found;
                 PersistentStore ->
-                    ResolvedKey = case RawKey == Key of
-                      true ->
-                        hb_store:resolve(PersistentStore, RawKey);
-                      false ->
-                        Key
+                    JoinedRawKey = hb_store:join(RawKey),
+                    StoreToUse = case Key == JoinedRawKey of
+                        true -> PersistentStore;
+                        false -> add_skip_resolve(PersistentStore)
                     end,
-                    hb_store:read_with_type(PersistentStore, ResolvedKey)
+                    StoreMod = store_module(StoreToUse),
+                    ?event(debug_lru, {persistent_fallback_start, {key, Key}, {store_module, StoreMod}}),
+                    Result = hb_trace:span(<<"lru:persistent_fallback">>, fun() ->
+                        hb_store:read_with_type(StoreToUse, Key)
+                    end),
+                    ResultType2 = case Result of
+                        {simple, _} -> simple;
+                        {composite, _} -> composite;
+                        not_found -> not_found;
+                        failure -> failure;
+                        _ -> other
+                    end,
+                    ?event(debug_lru, {persistent_fallback_result, {key, Key}, {result_type, ResultType2}}),
+                    case Result of
+                        {simple, Value} ->
+                            ?event(debug_lru, {writing_back_to_lru, {key, Key}}),
+                            hb_trace:span(<<"lru:write_back">>, fun() ->
+                                Server ! {put, Key, Value, self(), Ref = make_ref()},
+                                receive {ok, Ref} -> ok end
+                            end),
+                            {simple, Value};
+                        not_found ->
+                            not_found;
+                        {composite, _} = Comp ->
+                            Comp;
+                        Other ->
+                            Other
+                    end
             end;
         {raw, Entry = #{value := Value}} ->
             Server ! {update_recent, Key, Entry, self(), Ref = make_ref()},
@@ -734,6 +784,22 @@ get_persistent_store(Opts) ->
         no_store
     ).
 
+add_skip_resolve(Store) when is_map(Store) ->
+    Store#{<<"skip_resolve">> => true};
+add_skip_resolve([Store | Rest]) when is_map(Store) ->
+    [Store#{<<"skip_resolve">> => true} | add_skip_resolve(Rest)];
+add_skip_resolve([]) ->
+    [];
+add_skip_resolve(Other) ->
+    Other.
+
+store_module([Store | _]) when is_map(Store) ->
+    hb_maps:get(<<"store-module">>, Store, unknown, #{});
+store_module(Store) when is_map(Store) ->
+    hb_maps:get(<<"store-module">>, Store, unknown, #{});
+store_module(_) ->
+    unknown.
+
 convert_if_list(Value) when is_list(Value) ->
     join(Value);  % Perform the conversion if it's a list
 convert_if_list(Value) ->
@@ -861,6 +927,49 @@ list_test() ->
                  lists:sort(Keys3)),
     write(StoreOpts, <<"complex">>, #{<<"a">> => 10, <<"b">> => Binary}),
     ?assertEqual({ok, [<<"a">>, <<"b">>]}, list(StoreOpts, <<"complex">>)).
+
+partial_group_list_test() ->
+    PersistentStore = [#{
+        <<"store-module">> => hb_store_fs,
+        <<"name">> => <<"cache-TEST/partial-group">>
+    }],
+    hb_store:reset(PersistentStore),
+    StoreOpts = #{
+        <<"name">> => hb_util:human_id(crypto:strong_rand_bytes(32)),
+        <<"capacity">> => 500,
+        <<"store-module">> => hb_store_lru,
+        <<"persistent-store">> => PersistentStore
+    },
+    Binary = crypto:strong_rand_bytes(100),
+    hb_store:make_group(PersistentStore, <<"group">>),
+    hb_store:write(PersistentStore, <<"group/persistent-only">>, Binary),
+    write(StoreOpts, <<"group/lru-only">>, Binary),
+    {ok, Keys} = list(StoreOpts, <<"group">>),
+    ?assertEqual([<<"lru-only">>, <<"persistent-only">>], lists:sort(Keys)).
+
+list_resolves_persistent_links_test() ->
+    ok = meck:new(hb_store_fs, [passthrough]),
+    try
+        ResolvedPath = <<"resolved/path">>,
+        ok = meck:expect(hb_store_fs, resolve, fun(_, _) -> ResolvedPath end),
+        ok = meck:expect(hb_store_fs, list, fun(_, Path) -> {ok, [Path]} end),
+        PersistentStore = [#{
+            <<"store-module">> => hb_store_fs,
+            <<"name">> => <<"cache-TEST/lru-resolve">>
+        }],
+        StoreOpts = #{
+            <<"name">> => hb_util:human_id(crypto:strong_rand_bytes(32)),
+            <<"capacity">> => 500,
+            <<"store-module">> => hb_store_lru,
+            <<"persistent-store">> => PersistentStore
+        },
+        {ok, Keys} = list(StoreOpts, <<"link/sub">>),
+        ?assertEqual([ResolvedPath], Keys),
+        ?assert(meck:called(hb_store_fs, resolve, ['_', '_'])),
+        ?assert(meck:called(hb_store_fs, list, ['_', ResolvedPath]))
+    after
+        ok = meck:unload(hb_store_fs)
+    end.
 
 type_test() ->
     StoreOpts = test_opts(default, 500),

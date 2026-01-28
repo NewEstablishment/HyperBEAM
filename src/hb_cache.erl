@@ -486,39 +486,42 @@ store_read(Target, Path, [Store | RemainingStores], SawFailure, Opts) ->
         {fully_resolved_path, ResolvedFullPath},
         {store, Store}
     }),
-    ResolvedFullPathContent =
-        case hb_store:read_with_type(Store, ResolvedFullPath) of
-            failure -> failure;
-            not_found -> not_found;
-            {simple, Bin} ->
-                ?event({reading_data, ResolvedFullPath}),
-                {ok, Bin};
-            {composite, RawSubpaths} ->
-                ?event({reading_composite, ResolvedFullPath}),
-                Subpaths =
-                    lists:map(fun hb_util:bin/1, RawSubpaths),
-                ?event(
-                    {listed,
-                        {original_path, Path},
-                        {subpaths, {explicit, Subpaths}}
-                    }
+    StoreMod = hb_maps:get(<<"store-module">>, Store, unknown, #{}),
+    StoreLabel = iolist_to_binary([<<"store:">>, atom_to_binary(StoreMod, utf8)]),
+    ResolvedFullPathContent = hb_trace:span(StoreLabel, fun() ->
+      case hb_store:read_with_type(Store, ResolvedFullPath) of
+        failure -> failure;
+        not_found -> not_found;
+        {simple, Bin} ->
+            ?event({reading_data, ResolvedFullPath}),
+            {ok, Bin};
+        {composite, RawSubpaths} ->
+            ?event({reading_composite, ResolvedFullPath}),
+            Subpaths =
+                lists:map(fun hb_util:bin/1, RawSubpaths),
+            ?event(
+                {listed,
+                    {original_path, Path},
+                    {subpaths, {explicit, Subpaths}}
+                }
+            ),
+            Msg =
+                prepare_links(
+                    Target,
+                    ResolvedFullPath,
+                    Subpaths,
+                    Store,
+                    Opts
                 ),
-                Msg =
-                    prepare_links(
-                        Target,
-                        ResolvedFullPath,
-                        Subpaths,
-                        Store,
-                        Opts
-                    ),
-                ?event(
-                    {completed_read,
-                        {resolved_path, ResolvedFullPath},
-                        {explicit, Msg}
-                    }
-                ),
-                {ok, Msg}
-        end,
+            ?event(
+                {completed_read,
+                    {resolved_path, ResolvedFullPath},
+                    {explicit, Msg}
+                }
+            ),
+            {ok, Msg}
+      end
+    end),
     case ResolvedFullPathContent of
         {ok, _} = Response -> Response;
         failure ->
