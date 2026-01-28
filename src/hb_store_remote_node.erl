@@ -90,48 +90,40 @@ fetch_from_remote(Opts = #{ <<"node">> := Node }, Key) ->
 %% @doc Cache the data if the cache is enabled. The `local-store' option may
 %% either be `false' or a store definition to use as the local cache. Additional
 %% paths may be provided that should be linked to the data.
-maybe_cache(StoreOpts, Data) ->
-    maybe_cache(StoreOpts, Data, []).
-maybe_cache(StoreOpts, Data, Links) ->
-    ?event({maybe_cache, StoreOpts, Data}),
+maybe_cache(StoreOpts, Message) ->
+    maybe_cache(StoreOpts, Message, []).
+maybe_cache(StoreOpts, Message, Links) ->
+    ?event({maybe_cache, StoreOpts, Message}),
     try
         % Check if the local store is in our store options.
         case hb_maps:get(<<"local-store">>, StoreOpts, false, StoreOpts) of
             false ->
                 skipped;
-            Store ->
-                case hb_cache:write(Data, #{ store => Store }) of
-                    {ok, RootPath} ->
-                        % Remove the base path from the links.
-                        LinksWithoutRootPath =
-                            lists:filter(
-                                fun(Link) -> Link /= RootPath end,
-                                Links
-                            ),
-                        ?event(store_remote_node, cached_received),
-                        LinkResults =
-                            lists:filter(
-                                fun(Link) ->
-                                    hb_store:make_link(Store, RootPath, Link) == false
-                                end,
-                                LinksWithoutRootPath
-                            ),
-                        ?event(store_remote_node,
-                            {linked_cached,
-                                {failed_links, LinkResults}
-                            }
-                        ),
-                        case LinkResults of
-                            [] -> ok;
-                            _ -> {failed_links, LinkResults}
-                        end;
-                    {error, Err} ->
-                        ?event(store_remote_node, error_on_local_cache_write),
-                        ?event(warning, {error_caching_remote_node_data, Err}),
-                        {error, Err}
-                end
+            Store when is_map(Store) ->
+                maybe_cache_by_store(Store, Message, Links);
+            Stores when is_list(Stores) ->
+                ?event(debug, {writing_to_multiple_stores, length(Stores)}),
+                %% TODO: Suport parallel write
+                Responses = lists:map(
+                    fun (Store) ->
+                        maybe_cache_by_store(Store, Message, Links)
+                    end, 
+                    Stores),
+                %% Sucessful response if we can get ok on every response.
+                %% TODO: We might consider successful if we have just one write.
+                lists:foldl(
+                    fun
+                        (_, Error) when Error /= ok ->
+                            Error;
+                        (Result, ok) ->
+                            Result
+                    end,
+                    ok,
+                    Responses
+                )
         end
-    catch _:_ ->
+    catch Class:Reason:Stacktrace ->
+        ?event(error, {maybe_cache, {class, Class}, {reason, Reason}, {stacktrace, Stacktrace}}),
         ignored
     end.
 
@@ -230,6 +222,7 @@ maybe_cache_by_store(#{<<"store-module">> := StoreModule} = Store, Data, Links) 
             ?event({skipped_store_write, {store_module, StoreModule}}),
             ok
     end.
+
 %% @doc Read local store cached value.
 read_local_cache(StoreOpts, ID) ->
     ?event({read_local_cache, StoreOpts, ID}),

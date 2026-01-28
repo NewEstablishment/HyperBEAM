@@ -317,7 +317,8 @@ type(Opts, Key) ->
                 no_store ->
                     not_found;
                 Store ->
-                    hb_store_common:resolved_type(Store, Key)
+                    ResolvedKey = hb_store:resolve(Store, Key),
+                    hb_store:type(Store, ResolvedKey)
             end;
         {raw, _} ->
             simple;

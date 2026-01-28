@@ -76,6 +76,12 @@ start(Opts) ->
             host := Host,
             port := Port
         } ?= uri_string:parse(Endpoint),
+        HttpClientAtom = maps:get(<<"http_client">>, Opts, gun),
+        HttpClient = 
+            case HttpClientAtom of 
+                gun -> fun gun_request/6;
+                httpc -> httpc
+            end,
         BaseConfig = erlcloud_s3:new(AccessKey, SecretKey, hb_util:list(Host), Port),
         Config = BaseConfig#aws_config{
             s3_scheme = hb_util:list(hb_util:list(Scheme) ++ "://"),
@@ -83,7 +89,7 @@ start(Opts) ->
             s3_bucket_access_method = ForcePathStyle,
             aws_region = Region,
             % Use `gun_pool` to define a connection pool. Default is `httpc`
-            http_client = fun gun_request/6
+            http_client = HttpClient
         },
         ok ?= test_bucket_access(Bucket, Config),
         StoreRef = get_store_ref(Opts),
@@ -91,7 +97,7 @@ start(Opts) ->
             StoreRef,
             #{bucket => Bucket, config => Config}
         ),
-        ?event(store_s3, {started, {bucket, Bucket}}),
+        ?event(store_s3, {started, {bucket, Bucket}, {http_client, HttpClientAtom}}),
         {ok, #{module => ?MODULE, bucket => Bucket}}
     else
         Error ->
@@ -344,8 +350,14 @@ read_direct(Opts, Key) ->
         catch
             _:{aws_error, {http_error, 404, _, _}} ->
                 not_found;
-            _:Reason ->
-                ?event(error, {s3_read_error, {key, Key}, {reason, Reason}}),
+            _:Reason:Stacktrace ->
+                ?event(s3_error,
+                    {s3_read_error,
+                        {key, Key},
+                        {sharded_key, ShardedKey},
+                        {reason, Reason},
+                        {opts, Opts},
+                        {stacktrace, Stacktrace}}),
                 %% To enable store chain fallback
                 not_found
         end
@@ -625,7 +637,15 @@ head_exists(Opts, Key) when is_binary(Key) ->
         Response = erlcloud_s3:head_object(BucketStr, ShardedKeyStr, [], Config),
         is_list(Response)
     catch
-        _:_ -> false
+        error:{aws_error, {http_error, 404, _, _}}:_ ->
+            false;
+        Class:Reason:Stacktrace ->
+            ?event(s3_error, 
+                {head_exists, 
+                    {class, Class}, 
+                    {reason, Reason}, 
+                    {stacktrace, Stacktrace}}),
+            false
     end.
 
 %% @doc Resolve any links in a path.
