@@ -17,7 +17,7 @@
 %%%   size, capacity, and indexing.
 -module(hb_store_lru).
 -export([start/1, stop/1, reset/1, scope/1]).
--export([write/3, read/2, list/2, type/2, make_link/3, make_group/2, resolve/2]).
+-export([write/3, read/2, read_with_type/2, list/2, type/2, make_link/3, make_group/2, resolve/2]).
 -include_lib("eunit/include/eunit.hrl").
 -include("include/hb.hrl").
 
@@ -294,6 +294,39 @@ type(Opts, Key) ->
             type(Opts, NewKey);
         {group, _Item} ->
             composite
+    end.
+
+%% @doc Read a value and its type in a single call.
+read_with_type(Opts, RawKey) ->
+    #{ <<"pid">> := Server } = hb_store:find(Opts),
+    Key = resolve(Opts, RawKey),
+    case fetch_cache_with_retry(Opts, Key) of
+        nil ->
+            case get_persistent_store(Opts) of
+                no_store ->
+                    not_found;
+                PersistentStore ->
+                    ResolvedKey = case RawKey == Key of
+                      true ->
+                        hb_store:resolve(PersistentStore, RawKey);
+                      false ->
+                        Key
+                    end,
+                    hb_store:read_with_type(PersistentStore, ResolvedKey)
+            end;
+        {raw, Entry = #{value := Value}} ->
+            Server ! {update_recent, Key, Entry, self(), Ref = make_ref()},
+            receive
+                {ok, Ref} -> {simple, Value}
+            end;
+        {link, Link} ->
+            read_with_type(Opts, Link);
+        {group, _Set} ->
+            case list(Opts, Key) of
+                {ok, Keys} -> {composite, Keys};
+                not_found -> not_found;
+                {error, _} -> failure
+            end
     end.
 
 %% @doc Create a directory inside the store.
@@ -838,6 +871,20 @@ type_test() ->
     ?assertEqual(composite, type(StoreOpts, <<"sub">>)),
     make_link(StoreOpts, <<"key1">>, <<"keylink">>),
     ?assertEqual(simple, type(StoreOpts, <<"keylink">>)).
+
+read_with_type_test() ->
+    StoreOpts = test_opts(default, 500),
+    Binary = crypto:strong_rand_bytes(100),
+    ?assertEqual(not_found, read_with_type(StoreOpts, <<"nonexistent">>)),
+    write(StoreOpts, <<"simple-key">>, Binary),
+    ?assertEqual({simple, Binary}, read_with_type(StoreOpts, <<"simple-key">>)),
+    make_group(StoreOpts, <<"group-key">>),
+    write(StoreOpts, <<"group-key/child1">>, <<"v1">>),
+    write(StoreOpts, <<"group-key/child2">>, <<"v2">>),
+    {composite, Keys} = read_with_type(StoreOpts, <<"group-key">>),
+    ?assertEqual([<<"child1">>, <<"child2">>], lists:sort(Keys)),
+    make_link(StoreOpts, <<"simple-key">>, <<"link-to-simple">>),
+    ?assertEqual({simple, Binary}, read_with_type(StoreOpts, <<"link-to-simple">>)).
 
 replace_link_test() ->
     StoreOpts = test_opts(default),
