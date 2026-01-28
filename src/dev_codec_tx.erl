@@ -305,7 +305,6 @@ enforce_valid_tx_test() ->
     SigInvalidSize66 = crypto:strong_rand_bytes(66),
     SigInvalidSize511 = crypto:strong_rand_bytes(511),
     SigTooLong513 = crypto:strong_rand_bytes(byte_size(?DEFAULT_SIG)+1),
-    
 
     FailureCases = [
         {not_a_tx_record, not_a_tx_record_atom, {invalid_tx, not_a_tx_record_atom}},
