@@ -3,7 +3,7 @@
 -export([id/1, id/2, hd/1, member/2, find/2]).
 -export([new_item/4, sign_item/2, verify_item/1]).
 -export([encode_tags/1, decode_tags/1]).
--export([serialize/1, deserialize/1, serialize_bundle/3]).
+-export([serialize/1, deserialize/2, serialize_bundle/3]).
 -export([data_item_signature_data/1]).
 -include("include/hb.hrl").
 -include_lib("eunit/include/eunit.hrl").
@@ -400,13 +400,13 @@ encode_vint(ZigZag, Acc) ->
 %% and *not* a bundle. It may be an item that contains a bundle, though.
 %% When deserializing a #tx it is the #tx.data that is deserialized (after
 %% consulting the #tx.tags to confirm that data format).
-deserialize(not_found) -> throw(not_found);
-deserialize(Item) when is_record(Item, tx) ->
-    maybe_unbundle(Item);
-deserialize(Binary) ->
-    deserialize_item(Binary).
-
-deserialize_item(Binary) ->
+deserialize(Item) -> deserialize(Item, #{}).
+deserialize(not_found, _Opts) -> throw(not_found);
+deserialize(Item, Opts) when is_record(Item, tx) ->
+    maybe_unbundle(Item, Opts);
+deserialize(Binary, Opts) ->
+    deserialize_item(Binary, Opts).
+deserialize_item(Binary, Opts) ->
     {SignatureType, Signature, Owner, Rest} = decode_signature(Binary),
     {Target, Rest2} = decode_optional_field(Rest),
     {Anchor, Rest3} = decode_optional_field(Rest2),
@@ -422,14 +422,24 @@ deserialize_item(Binary) ->
             tags = Tags,
             data = Data,
             data_size = byte_size(Data)
-        })
+        }),
+        Opts
     ).
 
-maybe_unbundle(Item) ->
+maybe_unbundle(Item, Opts) ->
     case dev_arweave_common:type(Item) of
-        list -> unbundle_list(Item);
-        binary -> Item;
-        map -> unbundle_map(Item)
+        list ->
+            UnbundleBundles = hb_opts:get(<<"unbundle_bundles">>, true, Opts),
+            case UnbundleBundles of
+                true -> 
+                    unbundle_list(Item);
+                false ->
+                    Item
+            end;
+        binary ->
+            Item;
+        map ->
+            unbundle_map(Item)
     end.
 
 unbundle_list(Item) ->
@@ -479,7 +489,7 @@ decode_bundle_items([], <<>>) ->
     [];
 decode_bundle_items([{_ID, Size} | RestItems], ItemsBin) ->
     [
-            deserialize_item(binary:part(ItemsBin, 0, Size))
+            deserialize_item(binary:part(ItemsBin, 0, Size), #{})
         |
             decode_bundle_items(
                 RestItems,
@@ -847,7 +857,7 @@ serialize_deserialize_deep_signed_bundle_test() ->
     ?assert(verify_item(Item3)).
 
 %% @doc Deserialize and reserialize a data item produced by the arbundles JS
-%% library. This validates both that we can read an arbundles.js data itme
+%% library. This validates both that we can read an arbundles.js data item
 %% but also that our data item serialization code is compatible with it.
 arbundles_item_roundtrip_test() ->
     {ok, Bin} = file:read_file(<<"test/arbundles.js/ans104-item.bundle">>),
@@ -909,6 +919,32 @@ arbundles_list_bundle_roundtrip_test() ->
 
     Reserialized = dev_arweave_common:normalize(Deserialized),
     ?event(debug_test, {reserialized, Reserialized}),
+    ?assert(verify_item(Reserialized)),
+    ?assertEqual(Bin, Reserialized#tx.data),
+    ok.
+
+%% @doc Do not unbundle bundles if store option <<"unbundle_bundles">>
+%% is set to false
+arbundles_list_bundle_not_unbundled_roundtrip_test() ->
+    W = ar_wallet:new(),
+    {ok, Bin} = file:read_file(<<"test/arbundles.js/ans104-list-bundle.bundle">>),
+    TX = sign_item(#tx{
+        format = ans104,
+        data = Bin,
+        data_size = byte_size(Bin),
+        tags = ?BUNDLE_TAGS
+    }, W),
+    ?event(debug_test, {tx, {explicit, TX}}),
+    ?assert(verify_item(TX)),
+
+    Opts = #{<<"unbundle_bundles">> => false},
+    Deserialized = deserialize(TX, Opts),
+    ?assert(is_binary(Deserialized#tx.data)),
+    ?assert(binary:match(Deserialized#tx.data, <<"first">>) /= nomatch),
+    ?assert(binary:match(Deserialized#tx.data, <<"second">>) /= nomatch),
+    ?assert(binary:match(Deserialized#tx.data, <<"third">>) /= nomatch),
+
+    Reserialized = dev_arweave_common:normalize(Deserialized),
     ?assert(verify_item(Reserialized)),
     ?assertEqual(Bin, Reserialized#tx.data),
     ok.
