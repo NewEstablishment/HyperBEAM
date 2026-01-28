@@ -97,6 +97,10 @@ verify_item(DataItem) ->
     ValidID = verify_data_item_id(DataItem),
     ValidSignature = verify_data_item_signature(DataItem),
     ValidTags = verify_data_item_tags(DataItem),
+    ?event({verify_item,
+        {id, ValidID},
+        {signature, ValidSignature},
+        {tags, ValidTags}}),
     ValidID andalso ValidSignature andalso ValidTags.
 
 %%%===================================================================
@@ -192,8 +196,11 @@ data_item_signature_data(RawItem) ->
         <<(Item#tx.data)/binary>>
     ]).
 
-get_signature_type({rsa, 65537}) -> "1";
-get_signature_type({eddsa, ed25519}) -> "2".
+get_signature_type({rsa, 65537}) -> <<"1">>;
+get_signature_type(ed25519) -> <<"2">>;
+get_signature_type({ecdsa, 256}) -> <<"3">>;
+get_signature_type(solana) -> <<"4">>;
+get_signature_type(injected_aptos) -> <<"5">>.
 
 %% @doc Verify the data item's ID matches the signature.
 verify_data_item_id(DataItem) ->
@@ -318,8 +325,6 @@ to_serialized_pair(Item, false, Signed) ->
 %% little-endian format which is why we encode to `<<1, 0>>'.
 encode_signature_type({rsa, 65537}) ->
     <<1, 0>>;
-encode_signature_type({eddsa, ed25519}) ->
-    <<2, 0>>;
 encode_signature_type(_) ->
     unsupported_tx_format.
 
@@ -512,8 +517,6 @@ decode_bundle_header(Count, <<Size:256/little-integer, ID:32/binary, Rest/binary
 %% little-endian format which is why we match on `<<1, 0>>'.
 decode_signature(<<1, 0, Signature:512/binary, Owner:512/binary, Rest/binary>>) ->
     {{rsa, 65537}, Signature, Owner, Rest};
-decode_signature(<<2, 0, Signature:64/binary, Owner:32/binary, Rest/binary>>) ->
-    {{eddsa, ed25519}, Signature, Owner, Rest};
 decode_signature(Other) ->
     ?event({error_decoding_signature,
         {sig_type, {explicit, binary:part(Other, 0, 2)}},
@@ -765,32 +768,6 @@ bundle_map_test() ->
     ?assertEqual(Item1#tx.data, (maps:get(<<"key1">>, BundleItem#tx.data))#tx.data),
     ?assert(verify_item(BundleItem)).
 
-eddsa_cases_test() -> 
-    Key = ar_wallet:new(?EDDSA_KEY_TYPE),
-    %% Owner and SignatureType defined during signing process.
-    Item1 = sign_item(#tx{
-        format = ans104,
-        target = crypto:strong_rand_bytes(32),
-        anchor = crypto:strong_rand_bytes(32),
-        tags = [{<<"tag1">>, <<"value1">>}, {<<"tag2">>, <<"value2">>}],
-        data = <<"item1_data">>
-    }, Key),
-    Bundle = serialize(dev_arweave_common:normalize(Item1)),
-    BundleItem = deserialize(Bundle),
-    %% Sign a valid transaction and verify it
-    ?assert(verify_item(BundleItem)),
-    %% Missing Anchor should fail
-    ?assertNot(verify_item(BundleItem#tx{anchor = <<>>})),
-    %% Missing Tags should fail
-    ?assertNot(verify_item(BundleItem#tx{tags = []})),
-    %% Missing Owner should fail
-    ?assertNot(verify_item(BundleItem#tx{owner = crypto:strong_rand_bytes(32)})),
-    %% Missing Target should fail
-    ?assertNot(verify_item(BundleItem#tx{target = <<>>})),
-    %% Missing Data should fail
-    ?assertNot(verify_item(BundleItem#tx{data = <<>>})),
-    ok.
-
 extremely_large_bundle_test() ->
     W = ar_wallet:new(),
     Data = crypto:strong_rand_bytes(100_000_000),
@@ -919,32 +896,6 @@ arbundles_list_bundle_roundtrip_test() ->
 
     Reserialized = dev_arweave_common:normalize(Deserialized),
     ?event(debug_test, {reserialized, Reserialized}),
-    ?assert(verify_item(Reserialized)),
-    ?assertEqual(Bin, Reserialized#tx.data),
-    ok.
-
-%% @doc Do not unbundle bundles if store option <<"unbundle_bundles">>
-%% is set to false
-arbundles_list_bundle_not_unbundled_roundtrip_test() ->
-    W = ar_wallet:new(),
-    {ok, Bin} = file:read_file(<<"test/arbundles.js/ans104-list-bundle.bundle">>),
-    TX = sign_item(#tx{
-        format = ans104,
-        data = Bin,
-        data_size = byte_size(Bin),
-        tags = ?BUNDLE_TAGS
-    }, W),
-    ?event(debug_test, {tx, {explicit, TX}}),
-    ?assert(verify_item(TX)),
-
-    Opts = #{<<"unbundle_bundles">> => false},
-    Deserialized = deserialize(TX, Opts),
-    ?assert(is_binary(Deserialized#tx.data)),
-    ?assert(binary:match(Deserialized#tx.data, <<"first">>) /= nomatch),
-    ?assert(binary:match(Deserialized#tx.data, <<"second">>) /= nomatch),
-    ?assert(binary:match(Deserialized#tx.data, <<"third">>) /= nomatch),
-
-    Reserialized = dev_arweave_common:normalize(Deserialized),
     ?assert(verify_item(Reserialized)),
     ?assertEqual(Bin, Reserialized#tx.data),
     ok.

@@ -17,10 +17,8 @@ new() ->
 new(KeyType = {KeyAlg, PublicExpnt}) when KeyType =:= {rsa, 65537} ->
     {[_, Pub], [_, Pub, Priv|_]} = {[_, Pub], [_, Pub, Priv|_]}
         = crypto:generate_key(KeyAlg, {4096, PublicExpnt}),
-    {{KeyType, Priv, Pub}, {KeyType, Pub}};
-new(KeyType = {KeyAlg, Curve}) when KeyType =:= {?EDDSA_SIGN_ALG, ed25519} -> 
-    {Pub, Priv} = crypto:generate_key(KeyAlg, Curve),
     {{KeyType, Priv, Pub}, {KeyType, Pub}}.
+
 
 %% @doc Sign some data with a private key.
 sign(Key, Data) ->
@@ -38,8 +36,6 @@ sign({{rsa, PublicExpnt}, Priv, Pub}, Data, DigestType) when PublicExpnt =:= 655
             privateExponent = binary:decode_unsigned(Priv)
         }
     );
-sign({KeyType = {KeyAlg, Curve}, Priv, _Pub}, Data, _DigestType) when KeyType =:= {?EDDSA_SIGN_ALG, ed25519} ->
-    crypto:sign(KeyAlg, none, Data, [Priv, Curve]);
 sign({{KeyType, Priv, Pub}, {KeyType, Pub}}, Data, DigestType) ->
     sign({KeyType, Priv, Pub}, Data, DigestType).
 
@@ -62,10 +58,18 @@ verify({{rsa, PublicExpnt}, Pub}, Data, Sig, DigestType) when PublicExpnt =:= 65
             modulus = binary:decode_unsigned(Pub)
         }
     );
-verify({{eddsa, Curve}, Pub}, Data, Sig, _DigestType) when
-      byte_size(Pub) == 32 andalso byte_size(Sig) == 64 andalso Curve =:= ed25519 ->
-    crypto:verify(eddsa, none, Data, Sig, [Pub, Curve]).
-
+verify({ed25519, PubKey}, Data, Sig, _DigestType) when 
+      byte_size(PubKey) == 32 andalso byte_size(Sig) == 64 ->
+    public_key:verify(Data, ignored, Sig, {ed_pub, ed25519, PubKey});
+verify({solana, PubKey}, Data, Sig, _DigestType) when 
+      byte_size(PubKey) == 32 andalso byte_size(Sig) == 64 ->
+    public_key:verify(Data, ignored, Sig, {ed_pub, ed25519, PubKey});
+verify({injected_aptos, PubKey}, Data, Sig, _DigestType) when 
+      byte_size(PubKey) == 32 andalso byte_size(Sig) == 64 ->
+    Nonce = <<"bundlr">>,
+    DataHex = binary:encode_hex(Data, lowercase),
+    Message = <<"APTOS", 0, "message: ", 0, DataHex/binary, 0, "nonce: ", Nonce/binary>>,
+    public_key:verify(Message, ignored, Sig, {ed_pub, ed25519, PubKey}).
 
 %% @doc Find a public key from a wallet.
 to_pubkey(Pubkey) ->
@@ -89,9 +93,7 @@ to_address({{_, _, PubKey}, {_, PubKey}}, _) ->
 to_address(PubKey, {rsa, 65537}) ->
     to_rsa_address(PubKey);
 to_address(PubKey, {ecdsa, 256}) ->
-    to_ecdsa_address(PubKey);
-to_address(PubKey, {eddsa, ed25519}) -> 
-    to_eddsa_address(PubKey).
+	to_ecdsa_address(PubKey).
 
 %% @doc Generate a new wallet public and private key, with a corresponding keyfile.
 %% The provided key is used as part of the file name.
@@ -239,9 +241,6 @@ hash_address(PubKey) ->
 
 to_ecdsa_address(PubKey) ->
 	hb_keccak:key_to_ethereum_address(PubKey).
-
-to_eddsa_address(PubKey) ->
-    hash_address(PubKey).
 
 %%%===================================================================
 %%% Private functions.

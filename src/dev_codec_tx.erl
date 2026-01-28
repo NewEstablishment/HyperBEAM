@@ -218,7 +218,7 @@ enforce_valid_tx(TX) ->
         {invalid_field, data_root, TX#tx.data_root}
     ),
     hb_util:ok_or_throw(TX,
-        hb_util:check_size(TX#tx.signature, [65, byte_size(?DEFAULT_SIG)]),
+        hb_util:check_size(TX#tx.signature, [64, 65, byte_size(?DEFAULT_SIG)]),
         {invalid_field, signature, TX#tx.signature}
     ),
     hb_util:ok_or_throw(TX,
