@@ -66,6 +66,7 @@
 -export([with_only_committed/2, without_unless_signed/3]).
 -export([with_commitments/3, without_commitments/3, remove_all_commitments/2]).
 -export([diff/3, match/2, match/3, match/4, find_target/3]).
+-export([contains_links/1]).
 %%% Helpers:
 -export([default_tx_list/0, filter_default_keys/1]).
 %%% Debugging tools:
@@ -238,7 +239,7 @@ do_normalize_commitments(Msg, Opts, passive) ->
     }),
     case {UnsignedCommitments, SignedCommitments} of
         {[], _} ->
-            {ok, #{ <<"commitments">> := NewCommitments }} =
+            {ok, #{ <<"commitments">> := NewCommitments } = LoadedMsg} =
                 dev_message:commit(
                     uncommitted(Msg),
                     #{ 
@@ -251,8 +252,19 @@ do_normalize_commitments(Msg, Opts, passive) ->
                 hb_maps:from_list(SignedCommitments),
                 Opts
             ),
-            Msg#{ <<"commitments">> => MergedCommitments };
-        _ -> Msg
+            %% We don't always want the LoadedMsg. If the Msg isn't linkfied, 
+            %% we will use that instead. Only when Msg is linkfied, we use 
+            %% the LoadedMsg.
+            IsMsgLinked = contains_links(Msg),
+            IsLoadedMsgLinked = contains_links(LoadedMsg),
+            case {IsMsgLinked, IsLoadedMsgLinked} of 
+                {true, false} -> 
+                    LoadedMsg#{ <<"commitments">> => MergedCommitments };
+                _ ->
+                    Msg#{ <<"commitments">> => MergedCommitments }
+            end;
+        _ -> 
+            Msg
     end;
 do_normalize_commitments(Msg, Opts, verify) ->
     UnsignedCommitment = commitment(#{ <<"type">> => <<"unsigned">> }, Msg, Opts),
@@ -990,3 +1002,6 @@ default_tx_message() ->
 default_tx_list() ->
     Keys = lists:map(fun hb_ao:normalize_key/1, record_info(fields, tx)),
     lists:zip(Keys, tl(tuple_to_list(#tx{}))).
+
+contains_links(Msg) when is_map(Msg) ->
+    maps:filter(fun (_Key, Value) -> ?IS_LINK(Value) end, Msg) /= #{}.
