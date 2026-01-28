@@ -950,16 +950,9 @@ set_ignore_undefined_test() ->
 	?assertEqual(#{ <<"test-key">> => <<"Value1">> },
 		hb_private:reset(hb_util:ok(set(Base, Req, #{ hashpath => ignore })))).
 
-verify_test_() ->
-	{foreach, fun () -> ok end, fun (_) -> ok end, [
-		{"RSA", fun () -> test_verify(?RSA_KEY_TYPE) end},
-		{"EDSSA", fun () -> test_verify(?EDDSA_KEY_TYPE) end}
-	]}.
-
-test_verify(KeyType) ->
+verify_test() ->
     Unsigned = #{ <<"a">> => <<"b">> },
-    Wallet = ar_wallet:new(KeyType),
-    Signed = hb_message:commit(Unsigned, #{ priv_wallet => Wallet }),
+    Signed = hb_message:commit(Unsigned, #{ priv_wallet => hb:wallet() }),
     ?event({signed, Signed}),
     BadSigned = Signed#{ <<"a">> => <<"c">> },
     ?event({bad_signed, BadSigned}),

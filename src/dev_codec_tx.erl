@@ -75,7 +75,7 @@ do_from(RawTX, Req, Opts) ->
     % Assert a minimally valid TX record so we can avoid a lot of edge case
     % handling in the rest of the code.
     enforce_valid_tx(RawTX),
-    TX = ar_bundles:deserialize(dev_arweave_common:normalize(RawTX), Opts),
+    TX = ar_bundles:deserialize(dev_arweave_common:normalize(RawTX)),
     ?event({from, {parsed_tx, hb_util:human_id(TX#tx.id)}}),
     % Get the fields, tags, and data from the TX.
     Fields = dev_codec_tx_from:fields(TX, <<>>, Opts),
@@ -305,6 +305,7 @@ enforce_valid_tx_test() ->
     SigInvalidSize66 = crypto:strong_rand_bytes(66),
     SigInvalidSize511 = crypto:strong_rand_bytes(511),
     SigTooLong513 = crypto:strong_rand_bytes(byte_size(?DEFAULT_SIG)+1),
+    
 
     FailureCases = [
         {not_a_tx_record, not_a_tx_record_atom, {invalid_tx, not_a_tx_record_atom}},

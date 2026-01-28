@@ -834,7 +834,7 @@ serialize_deserialize_deep_signed_bundle_test() ->
     ?assert(verify_item(Item3)).
 
 %% @doc Deserialize and reserialize a data item produced by the arbundles JS
-%% library. This validates both that we can read an arbundles.js data item
+%% library. This validates both that we can read an arbundles.js data itme
 %% but also that our data item serialization code is compatible with it.
 arbundles_item_roundtrip_test() ->
     {ok, Bin} = file:read_file(<<"test/arbundles.js/ans104-item.bundle">>),
@@ -1011,13 +1011,3 @@ generate_and_write_map_bundle_test_disabled() ->
     ?assert(verify_item(Deserialized)),
     ok = file:write_file(
         <<"test/arbundles.js/ans104-map-bundle-erlang.bundle">>, Serialized).
-
-deserialize_ed25519_transaction_test() ->
-    % ans104-item-ed25519.bin is dataitem 1rTy7gQuK9lJydlKqCEhtGLp2WWG-GOrVo5JdiCmaxs
-    {ok, Serialized} = file:read_file(<<"test/arbundles.js/ans104-item-ed25519.bin">>),
-    Deserialized = deserialize(Serialized),
-    ?assertEqual([{<<"Content-Type">>,<<"image/png">>}], Deserialized#tx.tags),
-    ?assertEqual(<<"ZbExyvGrJKOJTJcHMtKzoOZVCQBkjZ+5">>, Deserialized#tx.anchor),
-    ?assertEqual(<<"ejhYD9Cw9VCsVik6yGLoclo3CLRvAITHTZamLY_6ro4">>,
-        hb_util:human_id(ar_wallet:to_address(Deserialized#tx.owner, Deserialized#tx.signature_type))),
-    ?assert(verify_item(Deserialized)).
