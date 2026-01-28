@@ -103,6 +103,7 @@ httpc_req(Args, Opts) ->
                     HeaderKV
                 };
             _ ->
+                upload_metric(Body),
                 {
                     URL,
                     HeaderKV,
@@ -112,10 +113,11 @@ httpc_req(Args, Opts) ->
         end,
     ?event({http_client_outbound, Method, URL, Request}),
     HTTPCOpts = [{full_result, true}, {body_format, binary}],
-	StartTime = os:system_time(millisecond),
+	StartTime = os:system_time(native),
     case httpc:request(Method, Request, [], HTTPCOpts) of
         {ok, {{_, Status, _}, RawRespHeaders, RespBody}} ->
-	        EndTime = os:system_time(millisecond),
+            download_metric(RespBody),
+	        EndTime = os:system_time(native),
             RespHeaders =
                 [
                     {list_to_binary(Key), list_to_binary(Value)}
@@ -140,7 +142,7 @@ httpc_req(Args, Opts) ->
 gun_req(Args, Opts) ->
     gun_req(Args, false, Opts).
 gun_req(Args, ReestablishedConnection, Opts) ->
-	StartTime = os:system_time(millisecond),
+	StartTime = os:system_time(native),
 	#{ peer := Peer, path := Path, method := Method } = Args,
 	Response =
         case catch gen_server:call(?MODULE, {get_connection, Args, Opts}, infinity) of
@@ -161,7 +163,7 @@ gun_req(Args, ReestablishedConnection, Opts) ->
             Error ->
                 Error
 	    end,
-	EndTime = os:system_time(millisecond),
+	EndTime = os:system_time(native),
 	%% Only log the metric for the top-level call to req/2 - not the recursive call
 	%% that happens when the connection is reestablished.
 	case ReestablishedConnection of
@@ -188,7 +190,19 @@ record_duration(Details, Opts) ->
             % First, write to prometheus if it is enabled. Prometheus works
             % only with strings as lists, so we encode the data before granting
             % it.
-            GetFormat = fun(Key) -> hb_util:list(maps:get(Key, Details)) end,
+            GetFormat = fun 
+                            (<<"request-category">>) ->
+                                case maps:get(<<"request-path">>, Details) of
+                                    %% TODO: Make it configurable for S3 bucket defined
+                                    <<"/hb-s3", _/binary>> -> <<"S3">>;
+                                    <<"/hyperbeam", _/binary>> -> <<"S3">>;
+                                    <<"/graphql">> -> <<"GraphQL">>;
+                                    <<"/raw", _/binary>> -> <<"RAW">>;
+                                    _ -> <<"unknown">>
+                                end;
+                            (Key) -> 
+                                hb_util:list(maps:get(Key, Details)) 
+                        end,
             case application:get_application(prometheus) of
                 undefined -> ok;
                 _ ->
@@ -198,7 +212,8 @@ record_duration(Details, Opts) ->
                             GetFormat,
                             [
                                 <<"request-method">>,
-                                <<"status-class">>
+                                <<"status-class">>,
+                                <<"request-category">>
                             ]
                         ),
                         maps:get(<<"duration">>, Details)
@@ -263,7 +278,9 @@ init(Opts) ->
             ),
             try
                 application:ensure_all_started([prometheus, prometheus_cowboy]),
-                init_prometheus(Opts)
+                init_prometheus(),
+                erlang:send_after(5000, self(), conn_mailbox_monitoring),
+	            {ok, #state{ opts = Opts }}
             catch
                 Type:Reason:Stack ->
                     ?event(warning,
@@ -278,7 +295,7 @@ init(Opts) ->
         false -> {ok, #state{ opts = Opts }}
     end.
 
-init_prometheus(Opts) ->
+init_prometheus() ->
     application:ensure_all_started([prometheus, prometheus_cowboy]),
 	prometheus_counter:new([
 		{name, gun_requests_total},
@@ -293,7 +310,7 @@ init_prometheus(Opts) ->
 	prometheus_histogram:new([
 		{name, http_request_duration_seconds},
 		{buckets, [0.01, 0.1, 0.5, 1, 5, 10, 30, 60]},
-        {labels, [http_method, status_class]},
+        {labels, [http_method, status_class, category]},
 		{
 			help,
 			"The total duration of an hb_http_client:req call. This includes more than"
@@ -318,8 +335,13 @@ init_prometheus(Opts) ->
 		{name, http_client_uploaded_bytes_total},
 		{help, "The total amount of bytes posted via HTTP, per remote endpoint"}
 	]),
+    prometheus_gauge:new([
+        {name, gun_mailbox_size},
+        {labels, [conn_id]},
+		{help, "Gun connection mailbox size"}
+    ]),
     ?event(started),
-	{ok, #state{ opts = Opts }}.
+    ok.
 
 handle_call({get_connection, Args, Opts}, From,
 		#state{ pid_by_peer = PIDPeer, status_by_pid = StatusByPID } = State) ->
@@ -472,6 +494,13 @@ handle_info({'DOWN', _Ref, process, PID, Reason},
             }
 	end;
 
+handle_info(conn_mailbox_monitoring, #state{pid_by_peer = PidByPeer} = State) ->
+    spawn(fun() ->
+        maps:foreach(fun sample_conn_pid/2, PidByPeer)
+    end),
+    %% We should monitor for
+    erlang:send_after(5000, self(),     conn_mailbox_monitoring),
+    {noreply, State};
 handle_info(Message, State) ->
 	?event(warning, {unhandled_info, {module, ?MODULE}, {message, Message}}),
 	{noreply, State}.
@@ -485,6 +514,22 @@ terminate(Reason, #state{ status_by_pid = StatusByPID }) ->
 %%% Private functions.
 %%% ==================================================================
 
+sample_conn_pid(Peer, ConnPID) ->
+  %% Mailbox size
+  case process_info(ConnPID, message_queue_len) of
+    {message_queue_len, Len} ->
+        report(Peer, Len);
+    undefined ->
+          ok
+  end.
+
+%% Replace with prometheus_gauge:set/3 in real code
+report(Peer, Value) ->
+    prometheus_gauge:set(
+      gun_mailbox_size, 
+      [Peer], 
+      Value).
+
 %% @doc Safe wrapper for prometheus_gauge:inc/2.
 inc_prometheus_gauge(Name) ->
     case application:get_application(prometheus) of
@@ -492,7 +537,7 @@ inc_prometheus_gauge(Name) ->
         _ ->
             try prometheus_gauge:inc(Name)
             catch _:_ ->
-                init_prometheus(#{}),
+                init_prometheus(),
                 prometheus_gauge:inc(Name)
             end
     end.
@@ -524,6 +569,7 @@ open_connection(#{ peer := Peer }, Opts) ->
                             Opts
                         )
                 },
+            % We handle the retry
             retry => 0,
             connect_timeout =>
                 hb_opts:get(
@@ -610,6 +656,8 @@ method_to_bin(trace) ->
 	<<"TRACE">>;
 method_to_bin(patch) ->
 	<<"PATCH">>;
+method_to_bin(Method) when is_binary(Method) ->
+    Method;
 method_to_bin(_) ->
 	<<"unknown">>.
 
@@ -649,9 +697,13 @@ do_gun_request(PID, Args, Opts) ->
 	Ref = gun:request(PID, Method, Path, Headers, Body),
 	ResponseArgs =
         #{
-            pid => PID, stream_ref => Ref,
-			timer => Timer, limit => hb_maps:get(limit, Args, infinity, Opts),
-			counter => 0, acc => [], start => os:system_time(microsecond),
+            pid => PID, 
+            stream_ref => Ref,
+			timer => Timer, 
+            limit => hb_maps:get(limit, Args, infinity, Opts),
+			counter => 0, 
+            acc => [], 
+            start => os:system_time(microsecond),
 			is_peer_request => hb_maps:get(is_peer_request, Args, true, Opts)
         },
 	Response = await_response(hb_maps:merge(Args, ResponseArgs, Opts), Opts),
@@ -701,6 +753,7 @@ await_response(Args, Opts) ->
             };
 		{error, timeout} = Response ->
 			record_response_status(Method, Response),
+            ?event(http_outbound, {gun_cancel, {path, Path}}),
 			gun:cancel(PID, Ref),
 			log(warn, gun_await_process_down, Args, Response, Opts),
 			Response;
@@ -736,6 +789,18 @@ download_metric(Data) ->
 		byte_size(Data)
 	).
 
+upload_metric(Body) when is_binary(Body) ->
+	inc_prometheus_counter(
+		http_client_uploaded_bytes_total,
+		[],
+		byte_size(Body)
+	);
+upload_metric(#{method := <<"POST">>, body := Body}) ->
+	inc_prometheus_counter(
+		http_client_uploaded_bytes_total,
+		[],
+		byte_size(Body)
+	);
 upload_metric(#{method := post, body := Body}) ->
 	inc_prometheus_counter(
 		http_client_uploaded_bytes_total,
@@ -749,6 +814,8 @@ upload_metric(_) ->
 % gun_requests_total metrics.
 get_status_class({ok, {{Status, _}, _, _, _, _}}) ->
 	get_status_class(Status);
+get_status_class({ok, Status, _RespondeHeaders, _Body}) ->
+    get_status_class(Status);
 get_status_class({error, connection_closed}) ->
 	<<"connection_closed">>;
 get_status_class({error, connect_timeout}) ->
@@ -771,6 +838,8 @@ get_status_class({error, noproc}) ->
 	<<"noproc">>;
 get_status_class(208) ->
 	<<"already_processed">>;
+get_status_class(429) ->
+	<<"too_many_requests">>;
 get_status_class(Data) when is_integer(Data), Data > 0 ->
 	hb_util:bin(prometheus_http:status_class(Data));
 get_status_class(Data) when is_binary(Data) ->
