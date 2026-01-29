@@ -31,6 +31,7 @@
 
 %% @doc Start the LRU cache.
 start(StoreOpts = #{ <<"name">> := Name }) ->
+    init_prometheus(),
     ?event(cache_lru, {starting_lru_server, Name}),
     From = self(),
     spawn(
@@ -62,6 +63,7 @@ init(From, StoreOpts) ->
     CacheStatsTable = ets:new(hb_cache_lru_stats, [set]),
     CacheIndexTable = ets:new(hb_cache_lru_index, [ordered_set]),
     From ! {ok, #{ <<"pid">> => self(), <<"cache-table">> => CacheTable }},
+    erlang:send_after(5000, self(), mailbox_monitoring),
     #{
         cache_table => CacheTable,
         stats_table => CacheStatsTable,
@@ -144,7 +146,15 @@ server_loop(State =
         {stop, From, Ref} ->
             evict_all_entries(State, Opts),
             From ! {ok, Ref},
-            exit(self(), ok)
+            exit(self(), ok);
+        mailbox_monitoring ->
+            case process_info(self(), message_queue_len) of
+                {message_queue_len, Len} ->
+                    report_lru_mailbox_size(Len);
+                undefined ->
+                    ok
+            end,
+            erlang:send_after(5000, self(), mailbox_monitoring)
     end,
     server_loop(State, Opts).
 
@@ -161,6 +171,7 @@ sync(Server) ->
 %% After writing, the LRU is updated by moving the key in the most-recently-used
 %% key to cycle and re-prioritize cache entry.
 write(Opts, RawKey, Value) ->
+    record_operation(write),
     Key = hb_store:join(RawKey),
     #{ <<"pid">> := CacheServer } = hb_store:find(Opts),
     CacheServer ! {put, Key, Value, self(), Ref = make_ref()},
@@ -178,6 +189,7 @@ read(Opts, RawKey) ->
         nil ->
             case get_persistent_store(Opts) of
                 no_store ->
+                    record_operation(read_miss_no_store),
                     not_found;
                 PersistentStore ->
                     JoinedRawKey = hb_store:join(RawKey),
@@ -187,21 +199,27 @@ read(Opts, RawKey) ->
                     end,
                     case hb_store:read(StoreToUse, Key) of
                         {ok, Value} ->
+                            record_operation(read_hit_persistent),
                             hb_trace:span(<<"lru:write_back">>, fun() ->
                                 Server ! {put, Key, Value, self(), Ref = make_ref()},
                                 receive {ok, Ref} -> ok end
                             end),
                             {ok, Value};
                         Other ->
+                            record_operation(read_miss),
                             Other
                     end
             end;
-        {raw, Entry = #{value := Value}} ->
-            Server ! {update_recent, Key, Entry, self(), Ref = make_ref()},
-            receive
-                {ok, Ref} -> {ok, Value}
-            end;
+        {raw, _Entry = #{value := Value}} ->
+            record_operation(read_hit),
+            %% We don't care about updating cached values (for this use case)
+            %Server ! {update_recent, Key, Entry, self(), _Ref = make_ref()},
+            %receive
+                %{ok, Ref} -> {ok, Value}
+            %end;
+            {ok, Value};
         {link, Link} ->
+            record_operation(link),
             ?event({link_found, RawKey, Link}),
             read(Opts, Link);
         Unexpected ->
@@ -257,6 +275,7 @@ make_link(Opts, RawExisting, New) ->
 
 %% @doc List all the keys registered.
 list(Opts, Path) ->
+    record_operation(list),
     ResolvedPath = resolve(Opts, Path),
     PersistentKeys =
         case get_persistent_store(Opts) of
@@ -311,6 +330,7 @@ ets_keys(Opts, Path) ->
 
 %% @doc Determine the type of a key in the store.
 type(Opts, Key) ->
+    record_operation(type),
     case fetch_cache_with_retry(Opts, Key) of
         nil ->
             case get_persistent_store(Opts) of
@@ -343,6 +363,7 @@ read_with_type(Opts, RawKey) ->
         nil ->
             case get_persistent_store(Opts) of
                 no_store ->
+                    record_operation(read_miss_no_store),
                     not_found;
                 PersistentStore ->
                     JoinedRawKey = hb_store:join(RawKey),
@@ -365,6 +386,7 @@ read_with_type(Opts, RawKey) ->
                     ?event(debug_lru, {persistent_fallback_result, {key, Key}, {result_type, ResultType2}}),
                     case Result of
                         {simple, Value} ->
+                            record_operation(read_hit_persistent),
                             ?event(debug_lru, {writing_back_to_lru, {key, Key}}),
                             hb_trace:span(<<"lru:write_back">>, fun() ->
                                 Server ! {put, Key, Value, self(), Ref = make_ref()},
@@ -372,19 +394,25 @@ read_with_type(Opts, RawKey) ->
                             end),
                             {simple, Value};
                         not_found ->
+                            record_operation(read_miss),
                             not_found;
                         {composite, _} = Comp ->
+                            record_operation(read_hit_persistent),
                             Comp;
                         Other ->
                             Other
                     end
             end;
         {raw, Entry = #{value := Value}} ->
-            Server ! {update_recent, Key, Entry, self(), Ref = make_ref()},
-            receive
-                {ok, Ref} -> {simple, Value}
-            end;
+            record_operation(read_hit),
+            Server ! {update_recent, Key, Entry, self(), _Ref = make_ref()},
+            %% I don't think we need to wait because we neve update entries.
+            %receive 
+            %    {ok, Ref} -> {simple, Value}
+            %end,
+            {simple, Value};
         {link, Link} ->
+            record_operation(link),
             read_with_type(Opts, Link);
         {group, _Set} ->
             case list(Opts, Key) of
@@ -509,7 +537,7 @@ handle_group(State, Key, Opts) ->
                     ?event(cache_lru, {create_group, BaseDir}),
                     hb_store:make_group(Store, BaseDir),
                     BaseDir;
-              undefined -> 
+                undefined -> 
                     ensure_dir(State, BaseDir),
                     {group, Entry} = get_cache_entry(State, BaseDir),
                     BaseName = filename:basename(Key),
@@ -559,7 +587,8 @@ assign_new_entry(State, Key, Value, ValueSize, Capacity, Group, Opts) ->
     case cache_size(State) + ValueSize >= Capacity of
         true ->
             ?event(cache_lru, eviction_required),
-            evict_oldest_entry(State, ValueSize, Opts);
+            {Duration, _} = timer:tc(fun() -> evict_oldest_entry(State, ValueSize, Opts) end, native),
+            record_evict_oldest_entry(Duration);
         false ->
             ok
     end,
@@ -719,6 +748,7 @@ offload_to_store(TailKey, TailValue, Links, Group, Opts) ->
         no_store ->
             ok;
         Store ->
+            record_operation(offloading),
             case Group of
                 undefined ->
                     ignore;
@@ -762,6 +792,7 @@ decrease_cache_size(#{stats_table := Table}, Size) ->
     ets:update_counter(Table, size, {2, -Size, 0, 0}).
 
 replace_entry(State, Key, Value, ValueSize, {raw, OldEntry = #{ value := OldValue}}) when Value =/= OldValue ->
+    record_operation(replace_entry),
     % Update entry and move the keys in the front of the cache 
     % as the most used Key
     ?event(debug_lru, {replace_entry, 
@@ -829,6 +860,61 @@ maybe_convert_to_binary(Value) when is_list(Value) ->
     list_to_binary(Value);
 maybe_convert_to_binary(Value) when is_binary(Value) ->
     Value.
+
+init_prometheus() ->
+    case application:get_application(prometheus) of
+        undefined -> ok;
+        _ ->
+            try
+                prometheus_histogram:declare([
+                    {name, hb_store_lru_evict_oldest_entry_duration_seconds},
+                    {buckets, [0.001, 0.005, 0.01, 0.05, 0.1, 0.5, 1, 2, 5, 10, 30, 60]},
+                    {labels, [http_method, status_class, category]},
+                    {help, "How long takes LRU to evict the oldest entry"}
+                ]),
+                prometheus_gauge:new([
+                    {name, lru_store_mailbox_size},
+                    {help, "LRU store server mailbox size"}
+                ]),
+                prometheus_counter:new([
+                    {name, lru_store_operations_total},
+                    {labels, [operation]},
+                    {help, "Total number of LRU store operations (read/write)"}
+                ])
+            catch
+                error:mfa_already_exists -> ok;
+                _:_ -> ok
+            end
+    end.
+
+record_evict_oldest_entry(Duration) ->
+    spawn(
+        fun() ->
+            case application:get_application(prometheus) of
+                undefined -> ok;
+                _ ->
+                   prometheus_histogram:observe(
+                        hb_store_lru_evict_oldest_entry_duration_seconds,
+                        Duration
+                    )
+            end
+        end).
+
+report_lru_mailbox_size(Size) ->
+    spawn(fun() ->
+        case application:get_application(prometheus) of
+            undefined -> ok;
+            _ -> prometheus_gauge:set(lru_store_mailbox_size, Size)
+        end
+    end).
+
+record_operation(Operation) ->
+    spawn(fun() -> 
+        case application:get_application(prometheus) of
+            undefined -> ok;
+            _ -> prometheus_counter:inc(lru_store_operations_total, [Operation])
+        end
+    end).
 
 %%% Tests
 
