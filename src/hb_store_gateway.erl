@@ -116,7 +116,13 @@ singleflight_key(ID, StoreOpts) ->
 
 fetch_upstream(ID, StoreOpts) ->
     hb_trace:span(<<"gateway:fetch_upstream">>, fun() ->
-        try hb_gateway_client:read(ID, StoreOpts) of
+        %% Use batched GraphQL queries if enabled (default: true)
+        UseBatcher = hb_opts:get(graphql_batching, true, StoreOpts),
+        ReadFun = case UseBatcher of
+            true -> fun hb_graphql_batcher:read/2;
+            false -> fun hb_gateway_client:read/2
+        end,
+        try ReadFun(ID, StoreOpts) of
             {error, _} ->
                 ?event({read_not_found, {key, ID}}),
                 not_found;

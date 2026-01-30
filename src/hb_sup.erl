@@ -32,7 +32,16 @@ init(Opts) ->
             type => worker,
             modules => [hb_http_client]
         },
-    {ok, {SupFlags, [GunChild | StoreChildren]}}.
+    BatcherChild =
+        #{
+            id => hb_graphql_batcher,
+            start => {hb_graphql_batcher, start_link, [Opts]},
+            restart => permanent,
+            shutdown => 5000,
+            type => worker,
+            modules => [hb_graphql_batcher]
+        },
+    {ok, {SupFlags, [GunChild, BatcherChild | StoreChildren]}}.
 
 %% @doc Generate a child spec for stores in the given Opts.
 store_children(Store) when not is_list(Store) ->
