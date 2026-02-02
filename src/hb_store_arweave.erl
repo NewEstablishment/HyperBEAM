@@ -56,7 +56,42 @@ read(StoreOpts = #{ <<"index-store">> := IndexStore }, ID) ->
             end,
             Loaded;
         not_found ->
-            {error, not_found}
+            case hb_store:read(IndexStore, path(ID)) of
+                {ok, Binary} ->
+                    [IsTX, StartOffset, Length] = binary:split(Binary, <<":">>, [global]),
+                    Result = case hb_util:bool(IsTX) of
+                        true ->
+                            load_bundle(ID,
+                                hb_util:int(StartOffset), hb_util:int(Length), StoreOpts);
+                        false ->
+                            load_item(
+                                hb_util:int(StartOffset), hb_util:int(Length), StoreOpts)
+                    end,
+                    case Result of 
+                        {ok, Message} ->
+                            hb_store_remote_node:maybe_cache_async(StoreOpts, Message),
+                            {ok, Message};
+                        {error, Reason} ->
+                            ?event(error, {hb_store_arweave_local_store, {reason, Reason}}),
+                            {error, Reason}
+                    end;
+                not_found ->
+                    {error, not_found}
+            end;
+        {ok, Data} ->
+            {ok, Data}
+    end;
+read(_, _) -> 
+    {error, not_found}.
+
+read_with_type(Opts, Key) when is_list(Key) ->
+    read_with_type(Opts, hb_store:join(Key));
+read_with_type(Opts, Key) ->
+    ?event({read_with_type, {key, Key}}),
+    case read(Opts, Key) of
+        {ok, Value} -> {simple, Value};
+        {error, not_found} -> not_found;
+        not_found -> not_found
     end.
 
 load_item(StartOffset, Length, Opts) ->
