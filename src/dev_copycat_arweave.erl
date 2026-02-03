@@ -12,6 +12,9 @@
 
 % GET /~cron@1.0/once&cron-path=~copycat@1.0/arweave
 
+arweave(From, To, Opts) when is_integer(From) andalso is_integer(To) ->
+    %% Req used for debug only
+    fetch_blocks(#{}, From, To, Opts);
 %% @doc Fetch blocks from an Arweave node between a given range, or from the
 %% latest known block towards the Genesis block. If no range is provided, we
 %% fetch blocks from the latest known block towards the Genesis block.
@@ -328,6 +331,9 @@ process_tx({{TX, _TXDataRoot}, EndOffset}, BlockStartOffset, Opts) ->
                     {TotalTime, {_, ItemsCount}} = timer:tc(fun() ->
                         lists:foldl(
                             fun({ItemID, Size}, {ItemStartOffset, ItemsCountAcc}) ->
+                                    %InnerTXID = hb_util:encode(ItemID),
+                                %ok = file:write_file("txs.txt", <<InnerTXID/binary, $\n>>, [append, binary, raw]),
+
                                 hb_store_arweave:write_offset(
                                     IndexStore,
                                     hb_util:encode(ItemID),
