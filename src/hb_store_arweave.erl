@@ -103,14 +103,16 @@ maybe_fallback({ok, _} = Result, _, _) ->
 maybe_fallback({error, not_found}, #{<<"index-store">> := IndexStore} = StoreOpts, ID) ->
     %% We can fallback to /raw (hb_store_gateway)
     %% or we can fallback to force block search
-    case hb_arweave_fallback:read(ID, #{}) of 
+    case hb_arweave_fallback:read(ID, StoreOpts) of 
         {ok, Height} ->
+            ?event(arweave_fallback, {item_belong_to_height, {id, ID}, {height, Height}}),
             %% Temporary, we need to change this option to inside the store.
+            %% TODO: Proper fix is to remove this and pass StoreOpts
             Opts = #{
                      arweave_index_ids => true,
                      arweave_index_store => #{<<"index-store">> => IndexStore}
                     },
-            dev_copycat_arweave:arweave(Height + 1, Height, Opts),
+            dev_copycat_arweave:arweave(Height, Height, Opts),
             read_without_fallback(StoreOpts, ID);
         _ ->
             {error, not_found}
