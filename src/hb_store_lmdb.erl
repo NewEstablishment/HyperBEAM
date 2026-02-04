@@ -77,11 +77,16 @@ start(Opts = #{ <<"name">> := DataDir }) ->
         not_found ->
             ?event(lmdb_store, {env_open, {data_dir, DataDir}}),
             % Create the LMDB environment with specified size limit
-            {ok, Env} = elmdb:env_open(DataDirPath, EnvOpts),
-            {ok, DBInstance} = elmdb:db_open(Env, [create]),
-            % Store both environment and DB instance in persistent_term for later cleanup
-            persistent_term:put(StoreKey, {Env, DBInstance, DataDir}),
-            {ok, #{ <<"env">> => Env, <<"db">> => DBInstance }}
+            case elmdb:env_open(DataDirPath, EnvOpts) of
+                {ok, Env} ->
+                    {ok, DBInstance} = elmdb:db_open(Env, [create]),
+                    % Store both environment and DB instance in persistent_term for later cleanup
+                    persistent_term:put(StoreKey, {Env, DBInstance, DataDir}),
+                    {ok, #{ <<"env">> => Env, <<"db">> => DBInstance }};
+                {error, already_open} ->
+                   ?event(lmdb_store, {already_open, {data_dir, DataDir}}),
+                   ok
+            end
     end;
 start(_) ->
     {error, {badarg, <<"StoreOpts must be a map">>}}.
@@ -266,7 +271,11 @@ read_direct(Opts, Path) when is_binary(Path) ->
     case elmdb:get(DBInstance, Path) of
         {ok, Value} -> {ok, Value};
         {error, not_found} -> not_found;  % Normalize error format
-        not_found -> not_found  % Handle both old and new format
+        not_found -> not_found;  % Handle both old and new format
+        {error, database_error, ErrorMessage} ->
+            ?event(lmdb_store, {database_error, {msg, ErrorMessage}}),
+            %% TODO: Create a proper solution
+            read_direct(Opts, Path)
     end.
 
 %% @doc Read a value directly from the database with link resolution.
@@ -569,7 +578,10 @@ resolve(Opts, PathParts) when is_list(PathParts) ->
             to_path(ResolvedParts);
         {error, _} ->
             % If resolution fails, return original path as binary
-            to_path(PathParts)
+            to_path(PathParts);
+        database_error ->
+		    ?event(lmdb_store, {datasbase_error, resolve}),
+		    resolve(Opts, PathParts)
     end;
 resolve(_, Path) ->
     ?event(error, {unexpected_path, {path, Path}}),
@@ -608,13 +620,13 @@ safe_get_persistent_term(Key) ->
 close_and_cleanup(Env, DBInstance, StoreKey, DataDir) ->
     % Close DB instance first if it exists
     DBCloseResult = safe_close_db(DBInstance),
-    ?event({db_close_result, DBCloseResult}),
+    ?event(lmdb_store, {db_close_result, DBCloseResult}),
     % Then close the environment
     EnvCloseResult = safe_close_env(Env),
     persistent_term:erase(StoreKey),
     case EnvCloseResult of
-        ok -> ?event({lmdb_stop_success, DataDir});
-        {error, Reason} -> ?event({lmdb_stop_error, Reason})
+        ok -> ?event(lmdb_store, {lmdb_stop_success, DataDir});
+        {error, Reason} -> ?event(lmdb_store, {lmdb_stop_error, Reason})
     end.
 
 %% Close DB instance with error capture
