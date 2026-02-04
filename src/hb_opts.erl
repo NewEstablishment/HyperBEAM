@@ -26,7 +26,7 @@
 -define(DEFAULT_PRINT_OPTS,
     [
         error, http_error, cron_error, store_error,
-        http_short, compute_short, push_short, copycat_short, metrics_short
+        http_short, compute_short, push_short, copycat_short
     ]
 ).
 -endif.
@@ -448,7 +448,7 @@ default_message() ->
                     #{
                         <<"match">> => <<"^/arweave">>,
                         <<"with">> => <<"https://arweave.net">>,
-                        <<"opts">> => #{ http_client => httpc, protocol => http2 }
+                        <<"opts">> => #{ http_client => gun, protocol => http2 }
                     }
             },
             %% General Arweave requests: race both chain nodes, take
