@@ -55,20 +55,27 @@ start(Opts = #{ <<"name">> := DataDir }) ->
     % Ensure the directory exists before opening LMDB environment
     DataDirPath = hb_util:list(DataDir),
     ok = filelib:ensure_dir(filename:join(DataDirPath, "dummy")),
-    % Create the LMDB environment with specified size limit
-    {ok, Env} =
-        elmdb:env_open(
-            DataDirPath,
-            [
-                {map_size, maps:get(<<"capacity">>, Opts, ?DEFAULT_SIZE)},
-                no_mem_init, no_sync
-            ]
-        ),
-    {ok, DBInstance} = elmdb:db_open(Env, [create]),
-    % Store both environment and DB instance in persistent_term for later cleanup
     StoreKey = {lmdb, ?MODULE, DataDir},
-    persistent_term:put(StoreKey, {Env, DBInstance, DataDir}),
-    {ok, #{ <<"env">> => Env, <<"db">> => DBInstance }};
+    case persistent_term:get(StoreKey, not_found) of
+        {Env, DBInstance, DataDir} ->
+            ?event(lmdb_store, {already_created, {data_dir, DataDir}}),
+            {ok, #{<<"env">> => Env, <<"db">> => DBInstance}};
+        not_found ->
+            ?event(lmdb_store, {env_open, {data_dir, DataDir}}),
+            % Create the LMDB environment with specified size limit
+            {ok, Env} =
+                elmdb:env_open(
+                    DataDirPath,
+                    [
+                        {map_size, maps:get(<<"capacity">>, Opts, ?DEFAULT_SIZE)},
+                        no_mem_init, no_sync
+                    ]
+                ),
+            {ok, DBInstance} = elmdb:db_open(Env, [create]),
+            % Store both environment and DB instance in persistent_term for later cleanup
+            persistent_term:put(StoreKey, {Env, DBInstance, DataDir}),
+            {ok, #{ <<"env">> => Env, <<"db">> => DBInstance }}
+    end;
 start(_) ->
     {error, {badarg, <<"StoreOpts must be a map">>}}.
 
@@ -245,7 +252,7 @@ to_path(PathParts) ->
 %% in-process pending writes, if necessary.
 %% 
 %% Returns {ok, Value} or not_found.
-read_direct(Opts, Path) ->
+read_direct(Opts, Path) when is_binary(Path) ->
     #{ <<"db">> := DBInstance } = find_env(Opts),
     case elmdb:get(DBInstance, Path) of
         {ok, Value} -> {ok, Value};
@@ -541,7 +548,7 @@ add_path(Opts, Path1, Path2) when is_binary(Path1), is_list(Path2) ->
 %% @param StoreOpts Database configuration map
 %% @param Path The path to resolve (binary or list)
 %% @returns The resolved path as a binary
--spec resolve(map(), binary() | list()) -> binary().
+-spec resolve(map(), binary() | list()) -> binary() | not_found.
 resolve(Opts, Path) when is_binary(Path) ->
     resolve(Opts, binary:split(Path, <<"/">>, [global]));
 resolve(Opts, PathParts) when is_list(PathParts) ->
@@ -553,7 +560,9 @@ resolve(Opts, PathParts) when is_list(PathParts) ->
             % If resolution fails, return original path as binary
             to_path(PathParts)
     end;
-resolve(_,_) -> not_found.
+resolve(_, Path) ->
+    ?event(error, {unexpected_path, {path, Path}}),
+    not_found.
 
 %% @doc Retrieve or create the LMDB environment handle for a database.
 find_env(Opts) -> hb_store:find(Opts).
