@@ -84,8 +84,9 @@ start(Opts = #{ <<"name">> := DataDir }) ->
                     persistent_term:put(StoreKey, {Env, DBInstance, DataDir}),
                     {ok, #{ <<"env">> => Env, <<"db">> => DBInstance }};
                 {error, already_open} ->
+                    %% Race condition
                    ?event(lmdb_store, {already_open, {data_dir, DataDir}}),
-                   ok
+                   start(Opts)
             end
     end;
 start(_) ->
