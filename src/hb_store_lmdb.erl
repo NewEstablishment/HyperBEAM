@@ -63,11 +63,12 @@ start(Opts = #{ <<"name">> := DataDir }) ->
         not_found ->
             ?event(lmdb_store, {env_open, {data_dir, DataDir}}),
             % Create the LMDB environment with specified size limit
-            case 
+            case
                 elmdb:env_open(
                     DataDirPath,
                     [
                         {map_size, maps:get(<<"capacity">>, Opts, ?DEFAULT_SIZE)},
+                        {max_readers, 1024},
                         no_mem_init, no_sync
                     ]
                 ) of
@@ -77,8 +78,9 @@ start(Opts = #{ <<"name">> := DataDir }) ->
                     persistent_term:put(StoreKey, {Env, DBInstance, DataDir}),
                     {ok, #{ <<"env">> => Env, <<"db">> => DBInstance }};
                 {error, already_open} ->
+                    %% Race condition
                    ?event(lmdb_store, {already_open, {data_dir, DataDir}}),
-                   ok
+                   start(Opts)
         end
     end;
 start(_) ->
