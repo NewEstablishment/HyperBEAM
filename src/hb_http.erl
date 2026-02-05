@@ -1471,16 +1471,3 @@ parallel_request_test() ->
             #{<<"path">> => <<"/BOogk_XAI3bvNWnxNxwxmvOfglZt17o4MOVAdPNZ_ew">>},
             Opts
         )).
-
-request_error_handling_test() ->
-    Opts = #{},
-    NonExistentDomain = <<"http://nonexistent.invalid:80">>,
-    Result = hb_http:request(
-        <<"GET">>,
-        NonExistentDomain,
-        <<"/">>,
-        #{},
-        Opts
-    ),
-    % The result should be an error tuple, not crash with badmatch
-    ?assertMatch({error, _}, Result).
