@@ -56,67 +56,42 @@ read(StoreOpts = #{ <<"index-store">> := IndexStore }, ID) ->
             end,
             Loaded;
         not_found ->
-           read_without_fallback(StoreOpts, ID);
+            case hb_store:read(IndexStore, path(ID)) of
+                {ok, Binary} ->
+                    [IsTX, StartOffset, Length] = binary:split(Binary, <<":">>, [global]),
+                    Result = case hb_util:bool(IsTX) of
+                        true ->
+                            load_bundle(ID,
+                                hb_util:int(StartOffset), hb_util:int(Length), StoreOpts);
+                        false ->
+                            load_item(
+                                hb_util:int(StartOffset), hb_util:int(Length), StoreOpts)
+                    end,
+                    case Result of 
+                        {ok, Message} ->
+                            ?event(arweave_store, {chunks_found, {id, ID}, {message, Message}}),
+                            %% Cannot be async, because it will conflict with some binary 
+                            %% transactions.
+                            %% This transactions makes fallback to hyperbuddy logic, which give 
+                            %% 500 on first try, following by 200.
+                            hb_store_remote_node:maybe_cache(StoreOpts, Message),
+                            {ok, Message};
+                        {error, Reason} ->
+                            ?event(arweave_store, {chunks_not_found, {id, ID}}),
+                            ?event(error, {hb_store_arweave_local_store, {reason, Reason}}),
+                            {error, Reason}
+                    end;
+                not_found ->
+                    ?event(arweave_store, {no_index_found, {id, ID}}),
+                    {error, not_found}
+            end;
+
         {ok, Data} ->
             ?event(arweave_store, {local_cache_found, {id, ID}}),
             {ok, Data}
-    end,
-    maybe_fallback(Result, StoreOpts, ID);
+    end;
 read(_, _) -> 
     {error, not_found}.
-
-
-read_without_fallback(StoreOpts = #{ <<"index-store">> := IndexStore }, ID) -> 
-    case hb_store:read(IndexStore, path(ID)) of
-        {ok, Binary} ->
-            [IsTX, StartOffset, Length] = binary:split(Binary, <<":">>, [global]),
-            Result = case hb_util:bool(IsTX) of
-                true ->
-                    load_bundle(ID,
-                        hb_util:int(StartOffset), hb_util:int(Length), StoreOpts);
-                false ->
-                    load_item(
-                        hb_util:int(StartOffset), hb_util:int(Length), StoreOpts)
-            end,
-            case Result of 
-                {ok, Message} ->
-                    ?event(arweave_store, {chunks_found, {id, ID}, {message, Message}}),
-                    %% Cannot be async, because it will conflict with some binary 
-                    %% transactions.
-                    %% This transactions makes fallback to hyperbuddy logic, which give 
-                    %% 500 on first try, following by 200.
-                    hb_store_remote_node:maybe_cache(StoreOpts, Message),
-                    {ok, Message};
-                {error, Reason} ->
-                    ?event(arweave_store, {chunks_not_found, {id, ID}}),
-                    ?event(error, {hb_store_arweave_local_store, {reason, Reason}}),
-                    {error, Reason}
-            end;
-        not_found ->
-            ?event(arweave_store, {no_index_found, {id, ID}}),
-            {error, not_found}
-    end.
-
-
-maybe_fallback({ok, _} = Result, _, _) ->
-    Result;
-maybe_fallback({error, not_found}, #{<<"index-store">> := IndexStore} = StoreOpts, ID) ->
-    %% We can fallback to /raw (hb_store_gateway)
-    %% or we can fallback to force block search
-    case hb_arweave_fallback:read(ID, StoreOpts) of 
-        {ok, Height} ->
-            ?event(arweave_fallback, {item_belong_to_height, {id, ID}, {height, Height}}),
-            %% Temporary, we need to change this option to inside the store.
-            %% TODO: Proper fix is to remove this and pass StoreOpts
-            Opts = #{
-                     arweave_index_ids => true,
-                     arweave_index_store => #{<<"index-store">> => IndexStore}
-                    },
-            dev_copycat_arweave:arweave(Height, Height, Opts),
-            read_without_fallback(StoreOpts, ID);
-        _ ->
-            {error, not_found}
-    end.
 
 read_with_type(Opts, Key) when is_list(Key) ->
     read_with_type(Opts, hb_store:join(Key));
