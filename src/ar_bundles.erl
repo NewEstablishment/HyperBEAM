@@ -533,7 +533,7 @@ decode_signature(<<1, 0, Signature:512/binary, Owner:512/binary, Rest/binary>>) 
 decode_signature(<<2, 0, Signature:64/binary, Owner:32/binary, Rest/binary>>) ->
     {{eddsa, ed25519}, Signature, Owner, Rest};
 decode_signature(Other) ->
-    ?event({error_decoding_signature,
+    ?event(warning, {error_decoding_signature,
         {sig_type, {explicit, binary:part(Other, 0, 2)}},
         {binary, Other}}),
     unsupported_tx_format.
