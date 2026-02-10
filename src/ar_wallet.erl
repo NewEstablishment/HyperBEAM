@@ -64,7 +64,11 @@ verify({{rsa, PublicExpnt}, Pub}, Data, Sig, DigestType) when PublicExpnt =:= 65
     );
 verify({{eddsa, Curve}, Pub}, Data, Sig, _DigestType) when
       byte_size(Pub) == 32 andalso byte_size(Sig) == 64 andalso Curve =:= ed25519 ->
-    crypto:verify(eddsa, none, Data, Sig, [Pub, Curve]).
+    crypto:verify(eddsa, none, Data, Sig, [Pub, Curve]);
+verify({solana, Pub}, Data, Sig, _DigestType) when
+      byte_size(Pub) == 32 andalso byte_size(Sig) == 64 ->
+    HexData = hb_util:to_hex(Data),
+    crypto:verify(eddsa, none, HexData, Sig, [Pub, ed25519]).
 
 %% @doc Find a public key from a wallet.
 to_pubkey(Pubkey) ->
@@ -90,7 +94,9 @@ to_address(PubKey, {rsa, 65537}) ->
 to_address(PubKey, {ecdsa, 256}) ->
     to_ecdsa_address(PubKey);
 to_address(PubKey, {eddsa, ed25519}) ->
-    to_eddsa_address(PubKey).
+    to_eddsa_address(PubKey);
+to_address(PubKey, solana) ->
+    to_solana_address(PubKey).
 
 %% @doc Generate a new wallet public and private key, with a corresponding keyfile.
 %% The provided key is used as part of the file name.
@@ -241,6 +247,24 @@ to_ecdsa_address(PubKey) ->
 
 to_eddsa_address(PubKey) ->
     hash_address(PubKey).
+
+to_solana_address(PubKey) ->
+    base58_encode(PubKey).
+
+base58_encode(<<0, Rest/binary>>) ->
+    Encoded = base58_encode(Rest),
+    <<$1, Encoded/binary>>;
+base58_encode(Bin) when is_binary(Bin) ->
+    base58_encode_int(binary:decode_unsigned(Bin)).
+
+base58_encode_int(0) ->
+    <<>>;
+base58_encode_int(N) ->
+    Alphabet = <<"123456789ABCDEFGHJKLMNPQRSTUVWXYZabcdefghijkmnopqrstuvwxyz">>,
+    Rem = N rem 58,
+    Char = binary:at(Alphabet, Rem),
+    Rest = base58_encode_int(N div 58),
+    <<Rest/binary, Char>>.
 
 %%%===================================================================
 %%% Private functions.

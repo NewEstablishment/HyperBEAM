@@ -241,6 +241,8 @@ native_id(Wallet = {_Priv, _Pub}) ->
 %% is returned as is.
 human_id(Bin) when is_binary(Bin) andalso byte_size(Bin) == 32 ->
     encode(Bin);
+human_id(Bin) when is_binary(Bin) andalso byte_size(Bin) == 44 ->
+    Bin;
 human_id(Bin) when is_binary(Bin) andalso byte_size(Bin) == 43 ->
     Bin;
 human_id(Bin) when is_binary(Bin) andalso byte_size(Bin) == 42 ->
