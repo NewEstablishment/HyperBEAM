@@ -91,12 +91,14 @@ to_address({{_, _, PubKey}, {_, PubKey}}, _) ->
     to_address(PubKey);
 to_address(PubKey, {rsa, 65537}) ->
     to_rsa_address(PubKey);
-to_address(PubKey, {ecdsa, 256}) ->
+to_address(PubKey, {ecdsa, secp256k1}) ->
     to_ecdsa_address(PubKey);
 to_address(PubKey, {eddsa, ed25519}) ->
     to_eddsa_address(PubKey);
 to_address(PubKey, solana) ->
-    to_solana_address(PubKey).
+    to_solana_address(PubKey);
+to_address(PubKey, typed_ethereum) ->
+    to_ecdsa_address(PubKey).
 
 %% @doc Generate a new wallet public and private key, with a corresponding keyfile.
 %% The provided key is used as part of the file name.
