@@ -12,9 +12,6 @@
 
 % GET /~cron@1.0/once&cron-path=~copycat@1.0/arweave
 
-arweave(From, To, Opts) when is_integer(From) andalso is_integer(To) ->
-    %% Req used for debug only
-    fetch_blocks(#{}, From, To, Opts);
 %% @doc Fetch blocks from an Arweave node between a given range, or from the
 %% latest known block towards the Genesis block. If no range is provided, we
 %% fetch blocks from the latest known block towards the Genesis block.
