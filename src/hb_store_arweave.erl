@@ -3,6 +3,7 @@
 -module(hb_store_arweave).
 %%% Store API:
 -export([scope/0, scope/1, type/2, read/2]).
+-export([read_with_type/2, resolve/2]).
 %%% Indexing API:
 -export([write_offset/5, path/1]).
 -include("include/hb.hrl").
@@ -15,6 +16,8 @@
 scope() -> remote.
 scope(#{ <<"scope">> := Scope }) -> Scope;
 scope(_) -> scope().
+
+resolve(_, Key) -> Key.
 
 %% @doc Get the type of the data at the given key. We potentially cache the
 %% result, so that we don't have to read the data from the GraphQL route
@@ -40,7 +43,7 @@ read(StoreOpts = #{ <<"index-store">> := IndexStore }, ID) ->
                         hb_util:int(StartOffset), hb_util:int(Length), StoreOpts)
             end,
             case Loaded of
-                {ok, Message} ->
+                {ok, _Message} ->
                     ?event({{read, ok},
                         {id, {explicit, ID}},
                         {is_tx, IsTX},
