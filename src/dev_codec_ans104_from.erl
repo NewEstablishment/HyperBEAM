@@ -222,7 +222,9 @@ with_signed_commitment(
     Type = case Item#tx.signature_type of
         ?RSA_KEY_TYPE -> <<"rsa-pss-sha256">>;
         ?EDDSA_KEY_TYPE -> <<"ed25519">>;
-        ?SOLANA_KEY_TYPE -> <<"solana">>
+        ?SOLANA_KEY_TYPE -> <<"solana">>;
+        ?ECDSA_KEY_TYPE -> <<"ecdsa-secp256k1-sha256">>;
+        ?TYPED_ETHEREUM_KEY_TYPE -> <<"typed-ethereum">>
     end,
     Commitment =
         filter_unset(
