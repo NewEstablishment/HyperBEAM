@@ -25,8 +25,8 @@
 -else.
 -define(DEFAULT_PRINT_OPTS,
     [
-        error, http_error, cron_error,
-        http_short, compute_short, push_short, copycat_short
+        error, http_error, cron_error, store_error,
+        http_short, compute_short, push_short, copycat_short, warning
     ]
 ).
 -endif.
