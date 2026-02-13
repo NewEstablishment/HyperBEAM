@@ -534,7 +534,8 @@ store_read(Target, Path, [#{<<"store-module">> := StoreMod} = Store | RemainingS
             {path, Path}, 
             {store_module, StoreMod},
             {duration, erlang:convert_time_unit(Duration, native, millisecond)}}),
-    record_store_read_duration(Duration, StoreMod),
+    Name = maps:get(<<"name">>, Store, <<"default">>),
+    record_store_read_duration(Duration, StoreMod, Name),
     case ResolvedFullPathContent of
         {ok, _} = Response -> Response;
         failure ->
@@ -805,8 +806,8 @@ link(Existing, New, Opts) ->
 record_cache_write_message_duration(Duration) ->
     record_duration(cache_write_message_duration_seconds, Duration).
 
-record_store_read_duration(Duration, StoreModule) ->
-    record_duration(cache_store_read_duration_seconds, Duration, [StoreModule]).
+record_store_read_duration(Duration, StoreModule, Name) ->
+    record_duration(cache_store_read_duration_seconds, Duration, [StoreModule, Name]).
 
 record_duration(Name, Duration) ->
     record_duration(Name, Duration, []).
@@ -841,7 +842,7 @@ init_prometheus() ->
 	]),
     prometheus_histogram:declare([
 		{name, cache_store_read_duration_seconds},
-        {labels, [store_module]},
+        {labels, [store_module, store_name]},
 		{buckets, [0.001, 0.005, 0.01, 0.05, 0.1, 0.5, 1, 5, 10, 30, 60]},
 		{
 			help,
