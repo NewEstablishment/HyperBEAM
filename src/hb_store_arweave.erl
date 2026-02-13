@@ -3,7 +3,7 @@
 -module(hb_store_arweave).
 %%% Store API:
 -export([scope/0, scope/1, type/2, read/2]).
--export([read_with_type/2, resolve/2]).
+-export([start/1, read_with_type/2, resolve/2]).
 %%% Indexing API:
 -export([write_offset/5, path/1]).
 -include("include/hb.hrl").
@@ -19,6 +19,9 @@ scope(_) -> scope().
 
 resolve(_, Key) -> Key.
 
+start(_Opts) ->
+    init_prometheus().
+
 %% @doc Get the type of the data at the given key. We potentially cache the
 %% result, so that we don't have to read the data from the GraphQL route
 %% multiple times.
@@ -31,8 +34,10 @@ type(#{ <<"index-store">> := IndexStore }, ID) ->
     Type.
 
 read(StoreOpts = #{ <<"index-store">> := IndexStore }, ID) ->
+    StartRead = erlang:monotonic_time(microsecond),
     case hb_store:read(IndexStore, path(ID)) of
         {ok, Binary} ->
+            end_read_metric(StartRead),
             [IsTX, StartOffset, Length] = binary:split(Binary, <<":">>, [global]),
             Loaded = case hb_util:bool(IsTX) of
                 true ->
@@ -59,11 +64,21 @@ read(StoreOpts = #{ <<"index-store">> := IndexStore }, ID) ->
             end,
             Loaded;
         not_found ->
+            end_read_metric(StartRead),
             ?event(arweave_store, {no_index_found, {id, ID}}),
             {error, not_found}
     end;
 read(_, _) -> 
     {error, not_found}.
+
+end_read_metric(StartRead) ->
+    spawn(fun () -> 
+        Duration = erlang:monotonic_time(microsecond) - StartRead,
+        prometheus_histogram:observe(
+        hb_store_arweave_index_check_duration_seconds,
+        Duration * 1000
+        )
+    end).
 
 read_with_type(Opts, Key) when is_list(Key) ->
     read_with_type(Opts, hb_store:join(Key));
@@ -150,6 +165,21 @@ path(ID) ->
         (hb_util:bin(ID))/binary
     >>.
 
+init_prometheus() ->
+    case application:get_application(prometheus) of
+        undefined -> ok;
+        _ ->
+            try
+                prometheus_histogram:declare([
+                    {name, hb_store_arweave_index_check_duration_seconds},
+                    {buckets, [0.001, 0.005, 0.01, 0.05, 0.1, 0.5, 1]},
+                    {help, "How much it takes to check the index"}
+                ])
+            catch
+                error:mfa_already_exists -> ok;
+                _:_ -> ok
+            end
+    end.
 
 %%% Tests
 
