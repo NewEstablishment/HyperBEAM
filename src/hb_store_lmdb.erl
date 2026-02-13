@@ -70,6 +70,8 @@ start(Opts = #{ <<"name">> := DataDir }) ->
         end,
     % Store both environment and DB instance in persistent_term for later cleanup
     StoreKey = {lmdb, ?MODULE, DataDir},
+    %% Make it wait here
+    %hb_http_client:ok(),
     case persistent_term:get(StoreKey, not_found) of
         {Env, DBInstance, DataDir} ->
             ?event(lmdb_store, {already_created, {data_dir, DataDir}}),
