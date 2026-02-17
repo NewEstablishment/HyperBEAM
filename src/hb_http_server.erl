@@ -392,57 +392,67 @@ handle_request(RawReq, Body, ServerID) ->
                 RawReq
             ),
             {ok, Req2, no_state};
+        {<<"/raw/", TXID/binary>>, _} when byte_size(TXID) > 0 ->
+            case cowboy_req:method(RawReq) of
+                Method when Method =:= <<"GET">>; Method =:= <<"HEAD">> ->
+                    handle_raw_request(TXID, Req, NodeMsg);
+                _ ->
+                    handle_ao_core_request(Req, RawReq, Body, NodeMsg)
+            end;
         _ ->
-            % The request is of normal AO-Core form, so we parse it and invoke
-            % the meta@1.0 device to handle it.
-            ?event(http,
-                {
-                    http_inbound,
-                    {cowboy_req, {explicit, Req}, {body, {string, Body}}}
-                }
-            ),
-            % Parse the HTTP request into HyerBEAM's message format.
-            try hb_http:req_to_tabm_singleton(Req, Body, NodeMsg) of
-                ReqSingleton ->
-                    try
-                        CommitmentCodec =
-                            hb_http:accept_to_codec(ReqSingleton, NodeMsg),
-                        ?event(http,
-                            {parsed_singleton,
-                                {req_singleton, ReqSingleton},
-                                {accept_codec, CommitmentCodec}},
-                            #{}
-                        ),
-                        % Invoke the meta@1.0 device to handle the request.
-                        {ok, Res} =
-                            dev_meta:handle(
-                                NodeMsg#{
-                                    commitment_device => CommitmentCodec
-                                },
-                                ReqSingleton
-                            ),
-                        hb_http:reply(Req, ReqSingleton, Res, NodeMsg)
-                    catch
-                        Type:Details:Stacktrace ->
-                            handle_error(
-                                Req,
-                                ReqSingleton,
-                                Type,
-                                Details,
-                                Stacktrace,
-                                NodeMsg
-                            )
-                    end
-            catch ParseError:ParseDetails:ParseStacktrace ->
-                handle_error(
-                    Req,
-                    #{},
-                    ParseError,
-                    ParseDetails,
-                    ParseStacktrace,
-                    NodeMsg
-                )
+            handle_ao_core_request(Req, RawReq, Body, NodeMsg)
+    end.
+
+%% @doc The request is of normal AO-Core form, so we parse it and invoke
+%% the meta@1.0 device to handle it.
+handle_ao_core_request(Req, _RawReq, Body, NodeMsg) ->
+    ?event(http,
+        {
+            http_inbound,
+            {cowboy_req, {explicit, Req}, {body, {string, Body}}}
+        }
+    ),
+    % Parse the HTTP request into HyperBEAM's message format.
+    try hb_http:req_to_tabm_singleton(Req, Body, NodeMsg) of
+        ReqSingleton ->
+            try
+                CommitmentCodec =
+                    hb_http:accept_to_codec(ReqSingleton, NodeMsg),
+                ?event(http,
+                    {parsed_singleton,
+                        {req_singleton, ReqSingleton},
+                        {accept_codec, CommitmentCodec}},
+                    #{}
+                ),
+                % Invoke the meta@1.0 device to handle the request.
+                {ok, Res} =
+                    dev_meta:handle(
+                        NodeMsg#{
+                            commitment_device => CommitmentCodec
+                        },
+                        ReqSingleton
+                    ),
+                hb_http:reply(Req, ReqSingleton, Res, NodeMsg)
+            catch
+                Type:Details:Stacktrace ->
+                    handle_error(
+                        Req,
+                        ReqSingleton,
+                        Type,
+                        Details,
+                        Stacktrace,
+                        NodeMsg
+                    )
             end
+    catch ParseError:ParseDetails:ParseStacktrace ->
+        handle_error(
+            Req,
+            #{},
+            ParseError,
+            ParseDetails,
+            ParseStacktrace,
+            NodeMsg
+        )
     end.
 
 %% @doc Return a 500 error response to the client.
@@ -478,6 +488,44 @@ handle_error(Req, Singleton, Type, Details, Stacktrace, NodeMsg) ->
             <<"details">> => hb_util:bin(hb_format:remove_noise(DetailsStr))
         },
     hb_http:reply(Req, Singleton, FormattedErrorMsg, NodeMsg).
+
+%% @doc Handle a /raw/<TXID> request by fetching raw bytes from the Arweave
+%% store without deserializing.
+handle_raw_request(TXID, Req, NodeMsg) ->
+    Stores = hb_opts:get(store, [], NodeMsg),
+    case find_arweave_store(Stores) of
+        not_found ->
+            Req2 = cowboy_req:reply(404, #{}, <<>>, Req),
+            {ok, Req2, no_state};
+        ArweaveStoreOpts ->
+            case hb_store_arweave:read_raw(ArweaveStoreOpts, TXID) of
+                {ok, RawBinary, Meta} ->
+                    CT = maps:get(<<"content-type">>,
+                        Meta, <<"application/octet-stream">>),
+                    Headers = #{
+                        <<"content-type">> => CT,
+                        <<"content-length">> =>
+                            integer_to_binary(byte_size(RawBinary)),
+                        <<"access-control-allow-origin">> => <<"*">>
+                    },
+                    Req2 = cowboy_req:reply(200, Headers, RawBinary, Req),
+                    {ok, Req2, no_state};
+                {error, not_found} ->
+                    Req2 = cowboy_req:reply(404, #{}, <<>>, Req),
+                    {ok, Req2, no_state};
+                {error, _Reason} ->
+                    Req2 = cowboy_req:reply(502, #{}, <<>>, Req),
+                    {ok, Req2, no_state}
+            end
+    end.
+
+%% @doc Find the hb_store_arweave entry from the store configuration.
+%% Handles both a single map and a list of store maps.
+find_arweave_store(S = #{<<"store-module">> := hb_store_arweave}) -> S;
+find_arweave_store(M) when is_map(M) -> not_found;
+find_arweave_store([]) -> not_found;
+find_arweave_store([S = #{<<"store-module">> := hb_store_arweave} | _]) -> S;
+find_arweave_store([_ | Rest]) -> find_arweave_store(Rest).
 
 %% @doc Return the list of allowed methods for the HTTP server.
 allowed_methods(Req, State) ->
