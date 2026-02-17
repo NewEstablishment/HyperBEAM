@@ -36,38 +36,44 @@ type(#{ <<"index-store">> := IndexStore }, ID) ->
 
 read(StoreOpts = #{ <<"index-store">> := IndexStore }, ID) ->
     StartRead = erlang:monotonic_time(microsecond),
-    case hb_store:read(IndexStore, path(ID)) of
-        {ok, Binary} ->
-            end_read_metric(StartRead),
-            [IsTX, StartOffset, Length] = binary:split(Binary, <<":">>, [global]),
-            Loaded = case hb_util:bool(IsTX) of
-                true ->
-                    load_bundle(ID,
-                        hb_util:int(StartOffset), hb_util:int(Length), StoreOpts);
-                false ->
-                    load_item(
-                        hb_util:int(StartOffset), hb_util:int(Length), StoreOpts)
-            end,
-            case Loaded of
-                {ok, _Message} ->
-                    ?event(arweave_store, {chunks_found,
-                        {id, {explicit, ID}},
-                        {is_tx, IsTX},
-                        {start_offset, StartOffset},
-                        {length, Length}});
-                {error, Reason} ->
-                    ?event(arweave_store, {chunks_not_found,
-                        {id, {explicit, ID}}, 
-                        {is_tx, IsTX},
-                        {start_offset, StartOffset},
-                        {length, Length},
-                        {reason, Reason}})
-            end,
-            Loaded;
+    case hb_store_remote_node:read_local_cache(StoreOpts, ID) of
         not_found ->
-            end_read_metric(StartRead),
-            ?event(arweave_store, {no_index_found, {id, ID}}),
-            {error, not_found}
+            case hb_store:read(IndexStore, path(ID)) of
+                {ok, Binary} ->
+                    end_read_metric(StartRead),
+                    [IsTX, StartOffset, Length] = binary:split(Binary, <<":">>, [global]),
+                    Loaded = case hb_util:bool(IsTX) of
+                        true ->
+                            load_bundle(ID,
+                                hb_util:int(StartOffset), hb_util:int(Length), StoreOpts);
+                        false ->
+                            load_item(
+                                hb_util:int(StartOffset), hb_util:int(Length), StoreOpts)
+                    end,
+                    case Loaded of
+                        {ok, Message} ->
+                            hb_store_remote_node:maybe_cache(StoreOpts, Message),
+                            ?event(arweave_store, {chunks_found,
+                                {id, {explicit, ID}},
+                                {is_tx, IsTX},
+                                {start_offset, StartOffset},
+                                {length, Length}});
+                        {error, Reason} ->
+                            ?event(arweave_store, {chunks_not_found,
+                                {id, {explicit, ID}}, 
+                                {is_tx, IsTX},
+                                {start_offset, StartOffset},
+                                {length, Length},
+                                {reason, Reason}})
+                    end,
+                    Loaded;
+                not_found ->
+                    end_read_metric(StartRead),
+                    ?event(arweave_store, {no_index_found, {id, ID}}),
+                    {error, not_found}
+            end;
+        {ok, Message} ->
+            {ok, Message}
     end;
 read(_, _) -> 
     {error, not_found}.
