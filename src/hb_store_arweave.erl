@@ -35,12 +35,13 @@ type(#{ <<"index-store">> := IndexStore }, ID) ->
     Type.
 
 read(StoreOpts = #{ <<"index-store">> := IndexStore }, ID) ->
-    StartRead = erlang:monotonic_time(microsecond),
     case hb_store_remote_node:read_local_cache(StoreOpts, ID) of
         not_found ->
-            case hb_store:read(IndexStore, path(ID)) of
+            StartRead = erlang:monotonic_time(microsecond),
+            IndexResponse = hb_store:read(IndexStore, path(ID)),
+            end_read_metric(StartRead),
+            case IndexResponse of
                 {ok, Binary} ->
-                    end_read_metric(StartRead),
                     [IsTX, StartOffset, Length] = binary:split(Binary, <<":">>, [global]),
                     Loaded = case hb_util:bool(IsTX) of
                         true ->
@@ -68,7 +69,6 @@ read(StoreOpts = #{ <<"index-store">> := IndexStore }, ID) ->
                     end,
                     Loaded;
                 not_found ->
-                    end_read_metric(StartRead),
                     ?event(arweave_store, {no_index_found, {id, ID}}),
                     {error, not_found}
             end;
