@@ -37,19 +37,29 @@ type(#{ <<"index-store">> := IndexStore }, ID) ->
 read(StoreOpts = #{ <<"index-store">> := IndexStore }, ID) ->
     case hb_store_remote_node:read_local_cache(StoreOpts, ID) of
         not_found ->
-            StartRead = erlang:monotonic_time(microsecond),
-            IndexResponse = hb_store:read(IndexStore, path(ID)),
-            end_read_metric(StartRead),
+            {IndexDuration, IndexResponse} = timer:tc(fun () ->hb_store:read(IndexStore, path(ID)) end, native),
+            record_index_check_metric(IndexDuration),
             case IndexResponse of
                 {ok, Binary} ->
                     [IsTX, StartOffset, Length] = binary:split(Binary, <<":">>, [global]),
                     Loaded = case hb_util:bool(IsTX) of
                         true ->
-                            load_bundle(ID,
-                                hb_util:int(StartOffset), hb_util:int(Length), StoreOpts);
+                            {LoadDuration, LoadedMsg} = timer:tc(fun() -> 
+                                load_bundle(
+                                  ID,
+                                  hb_util:int(StartOffset), 
+                                  hb_util:int(Length), 
+                                  StoreOpts)
+                                                          end, native),
+                            record_chunk_fetch_metric(LoadDuration, load_bundle),
+                            LoadedMsg;
                         false ->
-                            load_item(
-                                hb_util:int(StartOffset), hb_util:int(Length), StoreOpts)
+                            {LoadDuration, LoadedMsg} = timer:tc(fun() -> load_item(
+                                hb_util:int(StartOffset), 
+                                hb_util:int(Length), 
+                                StoreOpts) end, native),
+                            record_chunk_fetch_metric(LoadDuration, load_item),
+                            LoadedMsg
                     end,
                     case Loaded of
                         {ok, Message} ->
@@ -78,13 +88,19 @@ read(StoreOpts = #{ <<"index-store">> := IndexStore }, ID) ->
 read(_, _) -> 
     {error, not_found}.
 
-end_read_metric(StartRead) ->
+record_index_check_metric(Duration) ->
+    record_metric(hb_store_arweave_index_check_duration_seconds, [], Duration).
+
+record_chunk_fetch_metric(Duration, Type) ->
+    record_metric(hb_store_arweave_chunk_fetch_duration_seconds, [Type], Duration).
+
+record_metric(Metric, Label, Duration) ->
     spawn(fun () -> 
-        Duration = erlang:monotonic_time(microsecond) - StartRead,
-        prometheus_histogram:observe(
-        hb_store_arweave_index_check_duration_seconds,
-        Duration * 1000
-        )
+        case application:get_application(prometheus) of
+            undefined -> ok;
+            _ ->
+                prometheus_histogram:observe(Metric, Label, Duration)
+        end
     end).
 
 read_with_type(Opts, Key) when is_list(Key) ->
@@ -182,6 +198,13 @@ init_prometheus() ->
                     {buckets, [0.001, 0.005, 0.01, 0.05, 0.1, 0.5, 1]},
                     {help, "How much it takes to check the index"}
                 ]),
+                prometheus_histogram:declare([
+                    {name, hb_store_arweave_chunk_fetch_duration_seconds},
+                    {buckets, [0.001, 0.005, 0.01, 0.05, 0.1, 0.5, 1]},
+                    {labels, [type]},
+                    {help, "How much it takes to check the index"}
+                ]),
+
                 ok
             catch
                 error:mfa_already_exists -> ok;
