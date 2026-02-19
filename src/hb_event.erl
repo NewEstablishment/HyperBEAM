@@ -7,7 +7,7 @@
 -include_lib("eunit/include/eunit.hrl").
 
 -define(OVERLOAD_QUEUE_LENGTH, 10000).
--define(MAX_MEMORY, 2_000_000_000). % 2GB
+-define(MAX_MEMORY, 1_000_000_000). % 2GB
 
 -ifdef(NO_EVENTS).
 log(_X) -> ok.
@@ -80,17 +80,20 @@ increment(signature_base, _Message, _Opts, _Count) -> ignored;
 increment(id_base, _Message, _Opts, _Count) -> ignored;
 increment(parsing, _Message, _Opts, _Count) -> ignored;
 increment(Topic, Message, _Opts, Count) ->
-    case parse_name(Message) of
+    case parse_name(Topic) of
         <<"debug", _/binary>> -> ignored;
-        EventName ->
-            TopicBin = parse_name(Topic),
-            case find_event_server() of
-                Pid when is_pid(Pid) ->
-                    Pid ! {increment, TopicBin, EventName, Count};
-                undefined ->
-                    PID = spawn(fun() -> server() end),
-                    hb_name:register(?MODULE, PID),
-                    PID ! {increment, TopicBin, EventName, Count}
+        TopicBin ->
+            case parse_name(Message) of
+                <<"debug", _/binary>> -> ignored;
+                EventName ->
+                    case find_event_server() of
+                        Pid when is_pid(Pid) ->
+                            Pid ! {increment, TopicBin, EventName, Count};
+                        undefined ->
+                            PID = spawn(fun() -> server() end),
+                            hb_name:register(?MODULE, PID),
+                            PID ! {increment, TopicBin, EventName, Count}
+                    end
             end
     end.
 
