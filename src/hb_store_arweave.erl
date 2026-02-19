@@ -44,13 +44,19 @@ read(StoreOpts = #{ <<"index-store">> := IndexStore }, ID) ->
                     [IsTX, StartOffset, Length] = binary:split(Binary, <<":">>, [global]),
                     Loaded = case hb_util:bool(IsTX) of
                         true ->
-                            {LoadDuration, LoadedMsg} = timer:tc(fun() -> 
+                            {LoadDuration, LoadedMsg} = timer:tc(
+                            fun() -> 
                                 load_bundle(
                                   ID,
                                   hb_util:int(StartOffset), 
                                   hb_util:int(Length), 
                                   StoreOpts)
-                                                          end, native),
+                            end, native),
+                            ?event(metrics_short, 
+                                {arweave_store_load, 
+                                    {id, ID},
+                                    {type, load_bundle},
+                                    {duration, erlang:convert_time_unit(LoadDuration, native, millisecond)}}),
                             record_chunk_fetch_metric(LoadDuration, load_bundle),
                             LoadedMsg;
                         false ->
@@ -58,6 +64,11 @@ read(StoreOpts = #{ <<"index-store">> := IndexStore }, ID) ->
                                 hb_util:int(StartOffset), 
                                 hb_util:int(Length), 
                                 StoreOpts) end, native),
+                            ?event(metrics_short, 
+                                {arweave_store_load, 
+                                    {id, ID},
+                                    {type, load_item},
+                                    {duration, erlang:convert_time_unit(LoadDuration, native, millisecond)}}),
                             record_chunk_fetch_metric(LoadDuration, load_item),
                             LoadedMsg
                     end,
@@ -94,12 +105,12 @@ record_index_check_metric(Duration) ->
 record_chunk_fetch_metric(Duration, Type) ->
     record_metric(hb_store_arweave_chunk_fetch_duration_seconds, [Type], Duration).
 
-record_metric(Metric, Label, Duration) ->
+record_metric(Metric, Labels, Duration) ->
     spawn(fun () -> 
         case application:get_application(prometheus) of
             undefined -> ok;
             _ ->
-                prometheus_histogram:observe(Metric, Label, Duration)
+                prometheus_histogram:observe(Metric, Labels, Duration)
         end
     end).
 
