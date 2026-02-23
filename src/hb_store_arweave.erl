@@ -10,6 +10,7 @@
 -include_lib("eunit/include/eunit.hrl").
 
 -define(ARWEAVE_INDEX_PATH, <<"~arweave@2.9-pre/offset">>).
+-define(PARTITION_SIZE, 3_600_000_000_000).
 
 %% @doc Although the index is local, loading an item via the index will make
 %% requests to a remote node, so we define the scope as remote.
@@ -42,6 +43,7 @@ read(StoreOpts = #{ <<"index-store">> := IndexStore }, ID) ->
             case IndexResponse of
                 {ok, Binary} ->
                     [IsTX, StartOffset, Length] = binary:split(Binary, <<":">>, [global]),
+                    record_partition_metric(StartOffset),
                     Loaded = case hb_util:bool(IsTX) of
                         true ->
                             {LoadDuration, LoadedMsg} = timer:tc(
@@ -98,6 +100,16 @@ read(StoreOpts = #{ <<"index-store">> := IndexStore }, ID) ->
     end;
 read(_, _) -> 
     {error, not_found}.
+
+record_partition_metric(Offset) ->
+    spawn(fun () -> 
+        case application:get_application(prometheus) of
+            undefined -> ok;
+            _ ->
+                Partition = binary_to_integer(Offset) div ?PARTITION_SIZE,
+                prometheus_counter:inc(hb_store_arweave_requests_partition, [Partition], 1)
+        end
+    end).
 
 record_index_check_metric(Duration) ->
     record_metric(hb_store_arweave_index_check_duration_seconds, [], Duration).
@@ -215,7 +227,11 @@ init_prometheus() ->
                     {labels, [type]},
                     {help, "How much it takes to check the index"}
                 ]),
-
+                prometheus_counter:declare([
+                    {name, hb_store_arweave_requests_partition},
+                    {labels, [partition]},
+                    {help, "Partition where chunks are being requested"}
+                ]),
                 ok
             catch
                 error:mfa_already_exists -> ok;
