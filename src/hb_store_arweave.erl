@@ -2,7 +2,7 @@
 %%% intermediate cache of offsets as an ID->ArweaveLocation mapping.
 -module(hb_store_arweave).
 %%% Store API:
--export([scope/0, scope/1, type/2, read/2]).
+-export([scope/0, scope/1, type/2, read/2, read_raw/2]).
 -export([start/1, read_with_type/2, resolve/2]).
 %%% Indexing API:
 -export([write_offset/5, path/1]).
@@ -98,7 +98,41 @@ read(StoreOpts = #{ <<"index-store">> := IndexStore }, ID) ->
         {ok, Message} ->
             {ok, Message}
     end;
-read(_, _) -> 
+read(_, _) ->
+    {error, not_found}.
+
+%% @doc Read the raw bytes for a TXID. For L1 transactions, returns the data
+%% field directly from chunk storage. For bundled data items, deserializes just
+%% enough to extract the data payload.
+read_raw(StoreOpts = #{ <<"index-store">> := IndexStore }, ID) ->
+    case hb_store:read(IndexStore, path(ID)) of
+        {ok, Binary} ->
+            [IsTX, StartOffset, Length] =
+                binary:split(Binary, <<":">>, [global]),
+            case read_chunks(
+                    hb_util:int(StartOffset), hb_util:int(Length), StoreOpts) of
+                {ok, RawBinary} ->
+                    case hb_util:bool(IsTX) of
+                        true ->
+                            {ok, RawBinary, #{}};
+                        false ->
+                            Item = ar_bundles:deserialize(
+                                RawBinary,
+                                #{<<"unbundle_bundles">> => false}),
+                            Meta = case lists:keyfind(
+                                    <<"Content-Type">>, 1, Item#tx.tags) of
+                                {_, CT} -> #{<<"content-type">> => CT};
+                                false -> #{}
+                            end,
+                            {ok, Item#tx.data, Meta}
+                    end;
+                {error, Reason} ->
+                    {error, Reason}
+            end;
+        not_found ->
+            {error, not_found}
+    end;
+read_raw(_, _) ->
     {error, not_found}.
 
 record_partition_metric(Offset) ->
