@@ -1,0 +1,93 @@
+name: Erlang CI
+
+on:
+  push:
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+
+    container:
+      image: erlang:27
+
+    steps:
+    - uses: actions/checkout@v4
+      with:
+        submodules: recursive
+
+    - name: Install build dependencies
+      run: |
+        apt-get update
+        apt-get install -y build-essential cmake pkg-config libssl-dev git curl
+        curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y
+        . "$HOME/.cargo/env"
+
+    - name: Compile
+      run: |
+        git config --global --add safe.directory "$GITHUB_WORKSPACE"
+        . "$HOME/.cargo/env"
+        rebar3 compile
+
+  eunit:
+    needs: build
+    runs-on: ubuntu-latest
+
+    container:
+      image: erlang:27
+
+    steps:
+    - uses: actions/checkout@v4
+      with:
+        submodules: recursive
+
+    - name: Install build dependencies
+      run: |
+        apt-get update
+        apt-get install -y build-essential cmake pkg-config libssl-dev git curl
+        curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y
+        . "$HOME/.cargo/env"
+
+    - name: Compile
+      run: |
+        git config --global --add safe.directory "$GITHUB_WORKSPACE"
+        . "$HOME/.cargo/env"
+        rebar3 compile
+
+    - name: EUnit tests
+      run: |
+        . "$HOME/.cargo/env"
+        rebar3 eunit
+
+  ct:
+    needs: build
+    runs-on: ubuntu-latest
+
+    container:
+      image: erlang:27
+
+    steps:
+    - uses: actions/checkout@v4
+      with:
+        submodules: recursive
+
+    - name: Install build dependencies
+      run: |
+        apt-get update
+        apt-get install -y build-essential cmake pkg-config libssl-dev git curl
+        curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y
+        . "$HOME/.cargo/env"
+
+    - name: Compile
+      run: |
+        git config --global --add safe.directory "$GITHUB_WORKSPACE"
+        . "$HOME/.cargo/env"
+        rebar3 compile
+
+    - name: Common Test
+      run: |
+        . "$HOME/.cargo/env"
+        rebar3 ct
