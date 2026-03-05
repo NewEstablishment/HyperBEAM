@@ -339,7 +339,11 @@ list_find(Key, [{XKey, Value} | Rest], Default) ->
 
 %% @doc Retrieve the data of an Arweave message that has been indexed.
 data(TXID, Opts) ->
-    request(<<"GET">>, <<"/raw/", TXID/binary>>, Opts).
+    case request(<<"GET">>, <<"/raw/", TXID/binary>>, Opts) of
+        {ok, #{ <<"data">> := Data }} -> {ok, Data};
+        {ok, #{ <<"body">> := Data }} -> {ok, Data};
+        Result -> Result
+    end.
 
 chunk(Base, Request, Opts) ->
     case hb_maps:get(<<"method">>, Request, <<"GET">>, Opts) of
@@ -817,6 +821,10 @@ to_message(Path = <<"/tx/", TXID/binary>>, <<"GET">>, {ok, #{ <<"body">> := Body
 to_message(Path = <<"/raw/", _/binary>>, <<"GET">>, {ok, #{ <<"body">> := Body }}, LogExtra, _Opts) ->
     event_request(Path, <<"GET">>, 200, LogExtra),
     {ok, Body};
+to_message(Path = <<"/raw/", _/binary>>, <<"GET">>, {ok, Response}, LogExtra, _Opts) when is_map(Response) ->
+    Status = maps:get(<<"status">>, Response, 200),
+    event_request(Path, <<"GET">>, Status, LogExtra),
+    {ok, Response};
 to_message(Path = <<"/block/", _/binary>>, <<"GET">>, {ok, #{ <<"body">> := Body }}, LogExtra, Opts) ->
     event_request(Path, <<"GET">>, 200, LogExtra),
     {ok, Block} =
@@ -1837,15 +1845,20 @@ reassemble_bundle1_test() ->
     assert_bundle_tx(<<"c1-FkhQd-Ul-VpIMR5Vs77lK__BlzHzena2zgNh_hME">>).
 
 reassemble_bundle2_test() ->
-    assert_bundle_tx(<<"OVjj52NvyIys7u84Rv1uqRG2vswlF95QDVPSmsmlwLk">>).
+    assert_bundle_tx(
+        <<"OVjj52NvyIys7u84Rv1uqRG2vswlF95QDVPSmsmlwLk">>,
+        #{ chunk_fetch_concurrency => 2 }
+    ).
 
 %% @doc This asserts that a bundle is correctly represented in the weave.
 %% It queries the L1 TX chunk range, reads the chunks, and then
 %% reassembles the bundle and nested items. This is also useful tool 
 %% debugging tool to check that a bundle is present in the weave.
 assert_bundle_tx(TXID) ->
+    assert_bundle_tx(TXID, #{}).
+
+assert_bundle_tx(TXID, Opts) ->
     application:ensure_all_started(hb),
-    Opts = #{},
     {ok, #{ <<"body">> := OffsetBody }} =
         hb_http:request(
             #{

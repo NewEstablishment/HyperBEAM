@@ -13,6 +13,10 @@
     monitor_by_pid = #{}
 }).
 
+-define(DEFAULT_RETRIES, 0).
+-define(DEFAULT_RETRY_TIME, 1000).
+-define(DEFAULT_KEEPALIVE_TIMEOUT, 60_000).
+-define(DEFAULT_CONNECT_TIMEOUT, 60_000).
 -define(HTTP_CLIENT_POOL, hb_http_client_pool).
 
 %%% ==================================================================
@@ -408,48 +412,6 @@ handle_call({request, Args, Opts}, _From, State) ->
     {Response, NextState} = request_on_worker(MergedArgs, Opts, State),
     {reply, Response, NextState};
 
-handle_call({get_connection, Args, Opts}, From,
-		#state{ pid_by_peer = PIDPeer, status_by_pid = StatusByPID } = State) ->
-	Peer = hb_maps:get(peer, Args, undefined, Opts),
-	case hb_maps:get(Peer, PIDPeer, not_found, Opts) of
-		not_found ->
-			{ok, PID} = open_connection(Args, hb_maps:merge(State#state.opts, Opts, Opts)),
-			MonitorRef = monitor(process, PID),
-			PIDPeer2 = hb_maps:put(Peer, PID, PIDPeer, Opts),
-			StatusByPID2 =
-                hb_maps:put(
-                    PID,
-                    {{connecting, [{From, Args}]}, MonitorRef, Peer},
-					StatusByPID,
-					Opts
-                ),
-			{
-                reply,
-                {ok, PID},
-                State#state{
-                    pid_by_peer = PIDPeer2,
-                    status_by_pid = StatusByPID2
-                }
-            };
-		PID ->
-			case hb_maps:get(PID, StatusByPID, undefined, Opts) of
-				{{connecting, PendingRequests}, MonitorRef, Peer} ->
-					StatusByPID2 =
-                        hb_maps:put(PID,
-                            {
-                                {connecting, [{From, Args} | PendingRequests]},
-                                MonitorRef,
-                                Peer
-                            },
-                            StatusByPID,
-							Opts
-                        ),
-					{noreply, State#state{ status_by_pid = StatusByPID2 }};
-				{connected, _MonitorRef, Peer} ->
-					{reply, {ok, PID}, State}
-			end
-	end;
-
 handle_call(Request, _From, State) ->
 	?event(warning, {unhandled_call, {module, ?MODULE}, {request, Request}}),
 	{reply, ok, State}.
@@ -685,8 +647,7 @@ log(Type, Event, #{method := Method, peer := Peer, path := Path}, Reason, Opts) 
 %% Metrics
 
 init_prometheus() ->
-    application:ensure_all_started([prometheus, prometheus_cowboy]),
-	prometheus_counter:new([
+    hb_prometheus:declare(counter, [
 		{name, gun_requests_total},
 		{labels, [http_method, status_class, category]},
 		{
@@ -694,33 +655,33 @@ init_prometheus() ->
 			"The total number of GUN requests."
 		}
 	]),
-	prometheus_gauge:new([{name, outbound_connections},
+	hb_prometheus:declare(gauge, [{name, outbound_connections},
 		{help, "The current number of the open outbound network connections"}]),
-	prometheus_histogram:new([
+	hb_prometheus:declare(histogram, [
 		{name, http_request_duration_seconds},
 		{buckets, [0.01, 0.1, 0.5, 1, 5, 10, 30, 60]},
-        {labels, [http_method, status_class, category]},
+	        {labels, [http_method, status_class, category]},
 		{
 			help,
 			"The total duration of an hb_http_client:req call. This includes more than"
             " just the GUN request itself (e.g. establishing a connection, "
             "throttling, etc...)"
 		}
-	]),
-	prometheus_histogram:new([
+		]),
+	hb_prometheus:declare(histogram, [
 		{name, http_client_get_chunk_duration_seconds},
 		{buckets, [0.1, 1, 10, 60]},
-        {labels, [status_class, peer]},
+	        {labels, [status_class, peer]},
 		{
 			help,
 			"The total duration of an HTTP GET chunk request made to a peer."
 		}
-	]),
-	prometheus_counter:new([
+		]),
+	hb_prometheus:declare(counter, [
 		{name, http_client_downloaded_bytes_total},
 		{help, "The total amount of bytes requested via HTTP, per remote endpoint"}
 	]),
-	prometheus_counter:new([
+	hb_prometheus:declare(counter, [
 		{name, http_client_uploaded_bytes_total},
 		{help, "The total amount of bytes posted via HTTP, per remote endpoint"}
 	]),
@@ -775,6 +736,27 @@ record_response_status(Method, Response, Path) ->
         ],
         1
     ).
+
+method_to_bin(get) ->
+	<<"GET">>;
+method_to_bin(post) ->
+	<<"POST">>;
+method_to_bin(put) ->
+	<<"PUT">>;
+method_to_bin(head) ->
+	<<"HEAD">>;
+method_to_bin(delete) ->
+	<<"DELETE">>;
+method_to_bin(connect) ->
+	<<"CONNECT">>;
+method_to_bin(options) ->
+	<<"OPTIONS">>;
+method_to_bin(trace) ->
+	<<"TRACE">>;
+method_to_bin(patch) ->
+	<<"PATCH">>;
+method_to_bin(_) ->
+	<<"unknown">>.
 
 %% @doc Safe wrapper for prometheus_gauge:inc/2.
 inc_prometheus_gauge(Name) ->
