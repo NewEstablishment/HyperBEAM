@@ -172,30 +172,59 @@ parse_blacklist_line(Line) ->
         _ -> false
     end.
 
-%% @doc Collect all IDs found as elements of a given message.
-collect_ids(Msg, Opts) -> lists:usort(collect_ids(Msg, [], Opts)).
-collect_ids(Bin, Acc, _Opts) when ?IS_ID(Bin) -> [hb_util:human_id(Bin) | Acc];
-collect_ids(Bin, Acc, _Opts) when is_binary(Bin) -> Acc;
-collect_ids({link, ID, _}, Acc, _Opts) when ?IS_ID(ID) ->
-    [hb_util:human_id(ID) | Acc];
-collect_ids(Msg, Acc, Opts) when is_map(Msg) ->
-    case hb_maps:get(<<"path">>, Msg, undefined, Opts) of
-        Path when ?IS_ID(Path) -> [hb_util:human_id(Path)];
-        _ -> []
-    end ++
-    hb_maps:keys(hb_maps:get(<<"commitments">>, Msg, #{}, Opts), Opts) ++
+%% @doc Collect IDs found as elements of the hook message without recursively
+%% scanning loaded message contents.
+collect_ids(HookReq, Opts) ->
+    Request = hb_maps:get(<<"request">>, HookReq, #{}, Opts),
+    Body = hb_maps:get(<<"body">>, HookReq, [], Opts),
+    RequestIDs = collect_request_ids(Request, Opts),
+    BodyIDs = collect_top_level_ids(Body, Opts),
+    lists:usort(RequestIDs ++ BodyIDs).
+
+collect_request_ids(Request, Opts) when is_map(Request) ->
+    try collect_top_level_ids(hb_singleton:from(Request, Opts), Opts)
+    catch _:_ -> []
+    end;
+collect_request_ids(_Other, _Opts) ->
+    [].
+
+collect_top_level_ids(Bin, _Opts) when ?IS_ID(Bin) ->
+    [hb_util:human_id(Bin)];
+collect_top_level_ids({link, ID, _}, _Opts) when ?IS_ID(ID) ->
+    [hb_util:human_id(ID)];
+collect_top_level_ids(Msg, Opts) when is_map(Msg) ->
+    path_ids(hb_maps:get(<<"path">>, Msg, undefined, Opts), Opts) ++
     hb_maps:fold(
-        fun(_Key, Value, AccIn) -> collect_ids(Value, AccIn, Opts) end,
-        Acc,
+        fun(<<"path">>, _Value, Acc) ->
+                Acc;
+           (_Key, Value, Acc) when ?IS_ID(Value) ->
+                [hb_util:human_id(Value) | Acc];
+           (_Key, {link, ID, _}, Acc) when ?IS_ID(ID) ->
+                [hb_util:human_id(ID) | Acc];
+           (_Key, _Value, Acc) ->
+                Acc
+        end,
+        [],
         Msg
     );
-collect_ids(List, Acc, Opts) when is_list(List) ->
-    lists:foldl(
-        fun(Elem, AccIn) -> collect_ids(Elem, AccIn, Opts) end,
-        Acc,
-        List
-    );
-collect_ids(_Other, Acc, _Opts) -> Acc.
+collect_top_level_ids(List, Opts) when is_list(List) ->
+    lists:flatmap(fun(Elem) -> collect_top_level_ids(Elem, Opts) end, List);
+collect_top_level_ids(_Other, _Opts) ->
+    [].
+
+%% @doc Extract all IDs found in a path or hashpath.
+path_ids(undefined, _Opts) -> [];
+path_ids(Path, Opts) ->
+    case hb_path:term_to_path_parts(Path, Opts) of
+        undefined -> [];
+        Parts ->
+            [
+                hb_util:human_id(Part)
+            ||
+                Part <- Parts,
+                ?IS_ID(Part)
+            ]
+    end.
 
 %% @doc Insert a list of IDs into the cache table, returning the number of new IDs
 %% inserted. Each ID is inserted as a key with the current timestamp as the value.
@@ -308,7 +337,30 @@ basic_test() ->
                 <<"status">> := 451,
                 <<"reason">> := <<"content-policy">>
             }},
-        hb_http:get(Node, SignedID1, Opts1)
+        hb_http:get(Node, <<"/", SignedID1/binary, "/body">>, Opts1)
+    ),
+    ?assertEqual(
+        false,
+        is_match(
+            #{
+                <<"request">> =>
+                    #{<<"path">> => <<"/", UnsignedID3/binary, "/index.html">>},
+                <<"body">> =>
+                    [
+                        #{
+                            <<"device">> => <<"manifest@1.0">>,
+                            <<"index">> => #{ <<"path">> => <<"index.html">> },
+                            <<"paths">> =>
+                                #{
+                                    <<"index.html">> => #{ <<"id">> => UnsignedID3 },
+                                    <<"blocked.html">> => #{ <<"id">> => SignedID1 }
+                                }
+                        },
+                        #{ <<"path">> => <<"index.html">> }
+                    ]
+            },
+            Opts1
+        )
     ),
     ok.
 
