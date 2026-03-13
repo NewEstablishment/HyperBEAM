@@ -26,11 +26,10 @@
 %%% option can be used to specify the minimum balance that users will hit. Any
 %%% further requests are rejected but do not diminish their balance further.
 -module(dev_rate_limit).
--export([request/3]).
+-export([request/3, stop/1]).
 -include("include/hb.hrl").
 -include_lib("eunit/include/eunit.hrl").
 
--define(LOOKUP_TIMEOUT, 1000).
 -define(DEFAULT_MAX, 1_000).
 -define(DEFAULT_MIN, -1_000).
 -define(DEFAULT_REQS, 1000).
@@ -85,10 +84,9 @@ request(_, Msg, Opts) ->
             {ok, Msg}
     end.
 
-%% @doc The singleton ID of the rate limiter server. This allows us to run 
+%% @doc The singleton ID of the ETS table owner process. This allows us to run
 %% multiple rate limiters on the same node if needed, each with its own
-%% configuration, but with all of the callers sharing the same rate limiter
-%% server.
+%% configuration and ETS table, keyed by wallet address.
 server_id(Opts) ->
     {?MODULE, hb_util:human_id(hb_opts:get(priv_wallet, undefined, Opts))}.
 
@@ -97,32 +95,57 @@ server_id(Opts) ->
 request_reference(Msg, Opts) -> hb_private:get(<<"ip">>, Msg, Opts).
 
 %% @doc Check if the caller is limited according to the current state of the
-%% rate limiter server.
+%% rate limiter server. Uses ETS for lock-free concurrent access.
 is_limited(Reference, Opts) ->
-    PID = ensure_rate_limiter_started(Opts),
-    PID ! {request, self(), Reference},
-    receive
-        {incremented, Balance} when Balance > 0 -> false;
-        {incremented, Balance} when Balance =< 0 -> {true, Balance}
-    after ?LOOKUP_TIMEOUT ->
-        ?event(warning, {rate_limit_timeout, restarting}),
-        hb_name:unregister(server_id(Opts)),
-        is_limited(Reference, Opts)
+    Table = ensure_rate_limiter_started(Opts),
+    case ets:lookup(Table, Reference) of
+        [{_, infinity}] -> false;
+        PeerRecord ->
+            [{config, Reqs, Period, Max, Min}] = ets:lookup(Table, config),
+            Now = erlang:system_time(millisecond),
+            {Balance, Last} = case PeerRecord of
+                [] -> {Max, Now};
+                [{_, B, L}] -> {B, L}
+            end,
+            Peers = #{Reference => #{balance => Balance, last => Last}},
+            State = #{
+                reqs => Reqs, period => Period,
+                max => Max, min => Min, peers => Peers
+            },
+            NewState = debit(Reference, 1, State, Now),
+            NewBalance = account_balance(Reference, NewState, Now),
+            #{peers := #{Reference := #{balance := NB, last := NL}}} = NewState,
+            ets:insert(Table, {Reference, NB, NL}),
+            case NewBalance > 0 of
+                true -> false;
+                false -> {true, NewBalance}
+            end
     end.
 
-%% @doc Ensure that the rate limiter server is started and return the PID of
-%% the server. In the event of two instanteous spawns, one of the new processes 
-%% will fail with an error and the other will succeed. The effect to the caller
-%% is the same: A rate limiter is available to query.
+%% @doc Ensure that the rate limiter ETS table is created and return the table
+%% name. Uses `hb_name:singleton` to guarantee one-time creation.
 ensure_rate_limiter_started(Opts) ->
-    ServerID = server_id(Opts),
-    hb_name:singleton(
-        ServerID,
-        fun() -> start_server(ServerID, Opts) end
-    ).
+    TableName = table_name(Opts),
+    case ets:info(TableName) of
+        undefined ->
+            hb_name:singleton(
+                server_id(Opts),
+                fun() -> start_server(TableName, Opts) end
+            ),
+            hb_util:until(
+                fun() -> ets:info(TableName) =/= undefined end,
+                100
+            ),
+            TableName;
+        _ ->
+            TableName
+    end.
 
-start_server(ServerID, Opts) ->
-    % Exit the process if we cannot register the server ID.
+table_name(Opts) ->
+    Address = hb_util:human_id(hb_opts:get(priv_wallet, undefined, Opts)),
+    binary_to_atom(<<"~rate_limit/", Address/binary>>).
+
+start_server(TableName, Opts) ->
     Reqs = hb_opts:get(rate_limit_requests, ?DEFAULT_REQS, Opts),
     Period = hb_opts:get(rate_limit_period, ?DEFAULT_PERIOD, Opts),
     Max = hb_opts:get(rate_limit_max, ?DEFAULT_MAX, Opts),
@@ -131,7 +154,7 @@ start_server(ServerID, Opts) ->
     ?event(
         rate_limit,
         {started_rate_limiter,
-            {server_id, ServerID},
+            {table, TableName},
             {reqs, Reqs},
             {period, Period},
             {max, Max},
@@ -139,37 +162,31 @@ start_server(ServerID, Opts) ->
             {exempt, Exempt}
         }
     ),
-    server_loop(
-        #{
-            reqs => Reqs,
-            period => Period,
-            max => Max,
-            min => Min,
-            peers => #{ Ref => infinity || Ref <- Exempt }
-        }
-    ).
+    ets:new(
+        TableName,
+        [named_table, set, public,
+         {read_concurrency, true}, {write_concurrency, true}]
+    ),
+    ets:insert(TableName, {config, Reqs, Period, Max, Min}),
+    lists:foreach(
+        fun(Ref) -> ets:insert(TableName, {Ref, infinity}) end,
+        Exempt
+    ),
+    receive kill -> ok end.
 
-%% @doc The main loop of the rate limiter server. Only responds to two messages:
-%% - `{request, Self, Reference}': Debit the account of the given reference by 1.
-%% - `{balance, PID, Reference}': Return the current balance of the given reference.
-%% The `balance` call is not presently used, but seems sensible to have.
-server_loop(State) ->
-    ?event({server_loop, {state, State}}),
-    receive
-        {request, PID, Reference} ->
-            NewState = debit(Reference, 1, State, Now = erlang:system_time(millisecond)),
-            ?event({state_after_debit, NewState}),
-            Balance = account_balance(Reference, NewState, Now),
-            ?event(
-                rate_limit_short,
-                {rate_limit_debited, {target, Reference}, {balance, Balance}}
-            ),
-            PID ! {incremented, Balance},
-            server_loop(NewState);
-        {balance, PID, Reference} ->
-            PID ! {balance, account_balance(Reference, State)},
-            server_loop(State)
-    end.
+%% @doc Stop the rate limiter by killing the owner process (which destroys the
+%% ETS table) and unregistering the singleton.
+stop(Opts) ->
+    ServerID = server_id(Opts),
+    case hb_name:lookup(ServerID) of
+        PID when is_pid(PID) ->
+            Ref = monitor(process, PID),
+            PID ! kill,
+            receive {'DOWN', Ref, process, PID, _} -> ok end;
+        _ ->
+            ok
+    end,
+    hb_name:unregister(ServerID).
 
 %% @doc Debit the account of the given reference by the given quantity.
 debit(Ref, Amount, State = #{ peers := Peers, min := Min }, Now) ->
@@ -190,8 +207,6 @@ debit(Ref, Amount, State = #{ peers := Peers, min := Min }, Now) ->
 
 %% @doc Calculate the current balance for a user, including unused capacity 
 %% accrued since the last interaction.
-account_balance(Reference, State) ->
-    account_balance(Reference, State, erlang:system_time(millisecond)).
 account_balance(
         Reference,
         #{ max := Max, reqs := Reqs, period := Period, peers := Peers },
@@ -262,3 +277,51 @@ rate_limit_reset_test() ->
     ),
     timer:sleep(1_000),
     ?assertMatch({ok, _}, hb_http:get(ServerNode, <<"id">>, #{})).
+
+benchmark_rate_limit_test() ->
+    Opts = #{
+        rate_limit_requests => 4,
+        rate_limit_period => 1,
+        rate_limit_max => 10,
+        rate_limit_min => -10,
+        priv_wallet => hb:wallet()
+    },
+    ensure_rate_limiter_started(Opts),
+    Iterations =
+        hb_test_utils:benchmark(
+            fun() -> is_limited(<<"bench-peer">>, Opts) end,
+            0.15
+        ),
+    hb_test_utils:benchmark_print(<<"Rate-limited">>, <<"reqs">>, Iterations),
+    stop(Opts),
+    ?assert(Iterations >= 1000).
+
+benchmark_rate_limit_parallel_test() ->
+    Opts = #{
+        rate_limit_requests => 4,
+        rate_limit_period => 1,
+        rate_limit_max => 10,
+        rate_limit_min => -10,
+        priv_wallet => hb:wallet()
+    },
+    ensure_rate_limiter_started(Opts),
+    Parent = self(),
+    Workers = 16,
+    Run = fun(_) ->
+        Ref = make_ref(),
+        spawn_link(fun() ->
+            Its = hb_test_utils:benchmark(
+                fun() -> is_limited(<<"bench-peer">>, Opts) end,
+                0.2
+            ),
+            Parent ! {done, Ref, Its}
+        end),
+        Ref
+    end,
+    Refs = lists:map(Run, lists:seq(1, Workers)),
+    Total = lists:sum([receive {done, R, N} -> N end || R <- Refs]),
+    hb_test_utils:benchmark_print(
+        <<"Rate-limited (16 workers)">>, <<"reqs">>, Total
+    ),
+    stop(Opts),
+    ?assert(Total >= 1000).
