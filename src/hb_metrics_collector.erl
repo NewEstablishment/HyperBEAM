@@ -38,22 +38,10 @@ collect_mf(_Registry, Callback) ->
 
     ok.
 collect_metrics(system_load, SystemLoad) ->
-    %% Return the gauge metric with no labels
-    prometheus_model_helpers:gauge_metrics(
-        [
-            {[], SystemLoad}
-        ]
-    );
+    prometheus_model_helpers:gauge_metrics([{[], SystemLoad}]);
 collect_metrics(process_uptime_seconds, Uptime) ->
-    %% Convert the uptime from milliseconds to seconds
     UptimeSeconds = Uptime / 1000,
-
-    %% Return the gauge metric with no labels
-    prometheus_model_helpers:gauge_metrics(
-        [
-            {[], UptimeSeconds}
-        ]
-    ).
+    prometheus_model_helpers:gauge_metrics([{[], UptimeSeconds}]).
 
 %%====================================================================
 %% Private Functions
