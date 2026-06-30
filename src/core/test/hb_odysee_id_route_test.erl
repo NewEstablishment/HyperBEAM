@@ -145,9 +145,44 @@ standard_id_passes_through_test() ->
         hb_maps:get(<<"provenance">>, Loaded, undefined, #{})
     ).
 
-%% @doc A bare 40-hex claim-id IS routed to `source' (a 400 from `source', not a
-%% bare-path `not_found', proves the rewrite fired) but is unsupported at this
-%% layer.
+%% @doc The reference-layer path: a bare `GET /<claim-id>' for a claim-id that
+%% HAS a reference resolves to the verified LBRY content the reference's CURRENT
+%% immutable id points at. A claim-id is mapped to a real outpoint via
+%% `~odysee-reference@1.0/point' and that outpoint's claim evidence is seeded; the
+%% bare claim-id GET then comes back as the native `lbry-claim@1.0' object -- the
+%% meeting's "claim-id -> reference -> current immutable-id -> store" path. The
+%% hook consulted the reference, got the current outpoint, and routed it to
+%% `source', which re-read and re-verified the native commitment.
+bare_claim_id_via_reference_resolves_content_test() ->
+    Raw = binary:decode_hex(hb_lbry_tx:task0_tx_hex()),
+    {ok, TxMsg} = hb_lbry_commitment:transaction_message(Raw),
+    TxID = maps:get(<<"txid">>, TxMsg),
+    Outpoint = <<TxID/binary, ":0">>,
+    {ok, ClaimMsg} = hb_lbry_commitment:claim_output_message(Raw, 0),
+    ClaimID = <<"585d54c7bb8fd92043ed583c5aea18a9547028aa">>,
+    %% One shared store: the node reads it over HTTP, the in-process `point'
+    %% writes the reference link into it, and the outpoint's content is seeded
+    %% into it -- so `current' resolves the link to the seeded claim evidence.
+    Store = seed_store(Outpoint, ClaimMsg, <<"id-route-ref">>),
+    Operator = ar_wallet:new(),
+    Node = reference_node(Store, Operator),
+    %% Map claim-id -> outpoint with an operator-signed `point' (the operator
+    %% gate, exercised on a CLAIMED node).
+    ?assertMatch(
+        {ok, #{ <<"status">> := 200 }},
+        operator_point(ClaimID, Outpoint, Store, Operator)
+    ),
+    {ok, Resp} = hb_http:get(Node, <<"/", ClaimID/binary>>, #{}),
+    assert_native_object(Resp, <<"lbry-claim@1.0">>),
+    ?assertEqual(TxID, hb_maps:get(<<"txid">>, Resp, undefined, #{})),
+    ?assertEqual(0, hb_maps:get(<<"nout">>, Resp, undefined, #{})),
+    assert_routed_content_verifies(Store, Outpoint).
+
+%% @doc A bare 40-hex claim-id with NO reference seeded preserves today's
+%% behavior: the hook finds no reference (`current' is a 404), so the claim-id is
+%% routed to `source' unchanged, which answers with a structured 400
+%% `unsupported_native_source_id' (the rewrite fired -- not a bare-path
+%% `not_found' -- and the layer-correct outcome is a 400, never a crash).
 bare_claim_id_routes_but_is_unsupported_test() ->
     ClaimID = <<"585d54c7bb8fd92043ed583c5aea18a9547028aa">>,
     Node =
@@ -163,6 +198,46 @@ bare_claim_id_routes_but_is_unsupported_test() ->
         <<"unsupported_native_source_id">>,
         hb_maps:get(<<"error">>, Resp, undefined, #{})
     ).
+
+%% @doc A node with the id-route hook, the shared store, and the operator wallet.
+%% Result caching is disabled for the mutable-at-constant-path reference reads
+%% (the documented recipe) so the hook's `current' lookup never serves a cached
+%% prior target.
+reference_node(Store, Operator) ->
+    hb_http_server:start_node(#{
+        <<"port">> => 0,
+        <<"priv-wallet">> => Operator,
+        <<"operator">> => hb_util:human_id(ar_wallet:to_address(Operator)),
+        <<"on">> => #{ <<"request">> => hook() },
+        <<"store">> => [Store],
+        <<"http-extra-opts">> =>
+            #{
+                <<"force-message">> => true,
+                <<"cache-control">> => [<<"no-store">>, <<"no-cache">>]
+            }
+    }).
+
+%% @doc Map a claim-id to an outpoint via `~odysee-reference@1.0/point', signed by
+%% the operator (the gate, exercised against a CLAIMED node -- see
+%% `hb_odysee_reference_test:set_is_operator_gated'). The `point' is performed
+%% in-process against the shared store the node reads.
+operator_point(ClaimID, Outpoint, Store, Operator) ->
+    Opts =
+        #{
+            <<"store">> => [Store],
+            <<"priv-wallet">> => Operator,
+            <<"operator">> => hb_util:human_id(ar_wallet:to_address(Operator))
+        },
+    Signed =
+        hb_message:commit(
+            #{
+                <<"device">> => <<"odysee-reference@1.0">>,
+                <<"key">> => ClaimID,
+                <<"target">> => Outpoint
+            },
+            Opts
+        ),
+    hb_ao:resolve(Signed, <<"point">>, Opts).
 
 %% @doc Start a node with the id-route hook on `on.request' and the seeded store,
 %% drive a bare `GET /<id>' over real HTTP, and return the response.
