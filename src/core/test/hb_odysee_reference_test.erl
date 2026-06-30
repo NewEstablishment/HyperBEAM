@@ -190,3 +190,57 @@ http_current_marker(Node, Key, NodeOpts) ->
         hb_http:get(Node, <<"/~odysee-reference@1.0/current?key=", Key/binary>>, NodeOpts),
     Loaded = hb_cache:ensure_all_loaded(Value, NodeOpts),
     hb_maps:get(<<"odysee-reference-target">>, Loaded, not_found, NodeOpts).
+
+%% @doc The operator gate over REAL HTTP (the production entry point): on a
+%% claimed node, a `point' POST signed by a NON-operator is rejected 403, while
+%% one signed by the operator succeeds (200) and the update is observable via a
+%% `current' read. Closes the auth-path coverage gap (the gate was otherwise only
+%% exercised in-process; it rides the same is-operator-on-signed-body mechanism as
+%% `dev_local_name:register', but the protected mutation deserves a direct
+%% over-the-wire assertion).
+point_over_http_is_operator_gated_test() ->
+    Operator = ar_wallet:new(),
+    Store = [hb_test_utils:test_store(hb_store_fs, <<"ref-http-gate">>)],
+    Node =
+        hb_http_server:start_node(#{
+            <<"port">> => 0,
+            <<"store">> => Store,
+            <<"priv-wallet">> => Operator,
+            <<"operator">> => hb_util:human_id(ar_wallet:to_address(Operator)),
+            <<"http-extra-opts">> =>
+                #{
+                    <<"force-message">> => true,
+                    <<"cache-control">> => [<<"no-store">>, <<"no-cache">>]
+                }
+        }),
+    NodeOpts = #{ <<"store">> => Store },
+    Key = <<"http-gated-claim">>,
+    Target = write_target(<<"http-gate">>, NodeOpts),
+    PointReq = #{ <<"key">> => Key, <<"target">> => Target },
+    % Non-operator-signed point over the wire -> 403.
+    NonOpOpts = NodeOpts#{ <<"priv-wallet">> => ar_wallet:new() },
+    Forbidden =
+        hb_http:post(
+            Node,
+            <<"/~odysee-reference@1.0/point">>,
+            hb_message:commit(PointReq, NonOpOpts),
+            NonOpOpts
+        ),
+    ?assertEqual(403, http_status(Forbidden)),
+    % Operator-signed point over the wire -> 200, and `current' reflects it.
+    OpOpts = NodeOpts#{ <<"priv-wallet">> => Operator },
+    Allowed =
+        hb_http:post(
+            Node,
+            <<"/~odysee-reference@1.0/point">>,
+            hb_message:commit(PointReq, OpOpts),
+            OpOpts
+        ),
+    ?assertEqual(200, http_status(Allowed)),
+    ?assertEqual(<<"http-gate">>, http_current_marker(Node, Key, NodeOpts)).
+
+%% @doc Pull the HTTP status from an hb_http response regardless of whether a
+%% non-2xx surfaces as `{error, #{status}}' or `{ok, #{status}}'.
+http_status({ok, M}) when is_map(M) -> hb_maps:get(<<"status">>, M, 200, #{});
+http_status({error, M}) when is_map(M) -> hb_maps:get(<<"status">>, M, undefined, #{});
+http_status(Other) -> Other.
